@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.admin import router as admin_router
 from app.api.chat import router as chat_router
+from app.api.sessions import router as sessions_router
 from app.config import settings
 from app.crawler.scheduler import start_scheduler, stop_scheduler
 from app.database import Base, engine
@@ -61,6 +62,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router)
+app.include_router(sessions_router)
 app.include_router(admin_router)
 
 

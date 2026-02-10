@@ -98,18 +98,20 @@ class QdrantStore:
         query_vector: list[float],
         top_k: int = 5,
         filter_job: str | None = None,
+        filter_group: str | None = None,
     ) -> list[dict[str, Any]]:
-        """유사도 검색. filter_job이 지정되면 해당 직업만 검색."""
-        search_filter = None
+        """유사도 검색. filter_job(직업) 또는 filter_group(직업군) 필터 적용."""
+        conditions = []
         if filter_job:
-            search_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key="직업",
-                        match=MatchValue(value=filter_job),
-                    )
-                ]
+            conditions.append(
+                FieldCondition(key="직업", match=MatchValue(value=filter_job))
             )
+        if filter_group:
+            conditions.append(
+                FieldCondition(key="직업군", match=MatchValue(value=filter_group))
+            )
+
+        search_filter = Filter(must=conditions) if conditions else None
 
         response = self.client.query_points(
             collection_name=self.collection_name,

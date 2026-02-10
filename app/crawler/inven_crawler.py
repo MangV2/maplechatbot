@@ -16,13 +16,21 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# ── 직업군 ID 매핑 ─────────────────────────────────────
+# ── 직업군 ID 매핑 (직업별 게시판) ─────────────────────
 JOB_GROUPS: dict[str, str] = {
     "2294": "전사",
     "2295": "마법사",
     "2296": "궁수",
     "2297": "도적",
     "2298": "해적",
+}
+
+# ── 단일 게시판 ID 매핑 (직업 하위 없음: 공지/이벤트/팁 등) ─
+# 2314: 실시간 소식 게시판 — 공지, 이벤트, 업데이트, 패치노트 등
+# 2304: 팁과 노하우 게시판 — 사냥/보스/아이템/전문기술 등 팁
+FLAT_BOARDS: dict[str, str] = {
+    "2314": "실시간소식",
+    "2304": "팁과노하우",
 }
 
 DEFAULT_HEADERS = {
@@ -179,6 +187,32 @@ class InvenCrawler:
         except Exception:
             return []
 
+    # ── 본문 텍스트 정리 ──────────────────────────────
+
+    # 본문 끝에 붙는 노이즈 패턴 (목록|댓글 버튼, 추천/공유, 유저 프로필 등)
+    _NOISE_PATTERNS = [
+        # "목록 | 댓글(N)" 부터 이후 전부 제거
+        re.compile(r"목록\s*\|?\s*댓글\s*\(.*", re.DOTALL),
+        # "N 공유 스크랩 신고하기" 패턴
+        re.compile(r"\d+\s*공유\s*스크랩\s*신고하기.*", re.DOTALL),
+        # "추천 확인" 이후 프로필 영역
+        re.compile(r"추천\s*확인.*", re.DOTALL),
+        # 유저 프로필: "레벨 경험치 ... 포인트 이니 베니 제니 명성 획득스킬"
+        re.compile(r"(EXP|경험치)\s*[\d,]+\s*\(.*", re.DOTALL),
+        # 인벤 레벨/포인트 블록
+        re.compile(r"(인벤쪽지|이니힐링|더보기)\s*펼치기.*", re.DOTALL),
+    ]
+
+    @staticmethod
+    def _clean_content(raw: str) -> str:
+        """크롤링된 본문에서 노이즈(버튼, 프로필 등)를 제거."""
+        text = raw
+        for pattern in InvenCrawler._NOISE_PATTERNS:
+            text = pattern.sub("", text)
+        # 연속 공백/줄바꿈 정리
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
     # ── 게시글 상세 크롤링 ─────────────────────────────
 
     async def _fetch_post_detail(
@@ -200,13 +234,23 @@ class InvenCrawler:
         title_el = soup.select_one("#tbArticle div.articleTitle")
         final_title = title_el.get_text(strip=True) if title_el else title
 
-        # 본문
+        # 본문: 불필요한 하위 요소 제거 후 텍스트 추출
         content_el = soup.select_one("#tbArticle div.articleContent")
-        content = (
-            content_el.get_text(separator="\n", strip=True)
-            if content_el
-            else "본문 없음"
-        )
+        if content_el:
+            # 좋아요/공유/스크랩/신고 버튼 영역
+            for sel in [
+                "div.articleBtm", "div.articleFoot", "div.articleWriter",
+                "div.ven_wrap", "div.articleGood", "div.articleBookmark",
+                "div.articleShareBtn", "div.articleReportBtn",
+                "div.prev-next", "div.cmtAll", "div.bot-area",
+                "script", "style", "iframe",
+            ]:
+                for el in content_el.select(sel):
+                    el.decompose()
+            raw_content = content_el.get_text(separator="\n", strip=True)
+            content = self._clean_content(raw_content)
+        else:
+            content = "본문 없음"
 
         # 작성일
         date_el = soup.select_one("#tbArticle div.articleDate")
@@ -295,6 +339,71 @@ class InvenCrawler:
 
         return posts
 
+    # ── 단일 게시판 크롤링 (직업 하위 없음: 2314 실시간소식, 2304 팁과노하우) ─
+
+    async def _scrape_flat_board(
+        self,
+        session: aiohttp.ClientSession,
+        board_id: str,
+        board_label: str,
+        max_pages: int = 1,
+        max_posts_per_page: int = 20,
+        skip_notice: bool = False,
+    ) -> list[CrawledPost]:
+        """단일 게시판(실시간 소식 / 팁과 노하우)에서 게시글 수집.
+        직업군='정보공유', 직업=board_label(실시간소식|팁과노하우)로 저장.
+        """
+        posts: list[CrawledPost] = []
+        group_name = "정보공유"
+
+        for page in range(1, max_pages + 1):
+            url = f"{self.BASE_URL}{board_id}?p={page}"
+            page_html = await self._fetch(session, url)
+            if not page_html:
+                continue
+
+            soup = BeautifulSoup(page_html, "html.parser")
+            tbody = soup.select_one("#new-board form table tbody")
+            if not tbody:
+                logger.warning("[%s/%s] 게시글 목록 없음 (page %d)", group_name, board_label, page)
+                continue
+
+            rows = tbody.select("tr")
+            tasks = []
+            count = 0
+
+            for row in rows:
+                if skip_notice and "notice" in row.get("class", []):
+                    continue
+
+                title_link = row.select_one("td.tit div div a")
+                if not title_link:
+                    continue
+
+                href = title_link.get("href", "")
+                if not href:
+                    continue
+                if not href.startswith("http"):
+                    href = "https://www.inven.co.kr" + href
+
+                post_title = title_link.get_text(strip=True)
+                tasks.append(
+                    self._fetch_post_detail(session, group_name, board_label, post_title, href)
+                )
+                count += 1
+                if count >= max_posts_per_page:
+                    break
+
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, CrawledPost):
+                        posts.append(r)
+                    elif isinstance(r, Exception):
+                        logger.error("게시글 크롤링 실패: %s", r)
+
+        return posts
+
     # ── 전체 크롤링 실행 ───────────────────────────────
 
     async def crawl(
@@ -303,6 +412,10 @@ class InvenCrawler:
         max_pages: int = 1,
         max_posts_per_page: int = 20,
         target_groups: dict[str, str] | None = None,
+        include_flat_boards: bool = True,
+        flat_boards: dict[str, str] | None = None,
+        flat_board_pages: int = 1,
+        flat_board_posts_per_page: int = 20,
     ) -> CrawlResult:
         """전체 크롤링 실행.
 
@@ -311,20 +424,24 @@ class InvenCrawler:
             max_pages: 직업별 수집할 페이지 수
             max_posts_per_page: 페이지당 수집할 최대 게시글 수
             target_groups: 크롤링할 직업군 (None이면 전체 5개)
+            include_flat_boards: True면 실시간소식(2314)·팁과노하우(2304) 추가 수집
+            flat_boards: 단일 게시판 ID→라벨 (None이면 FLAT_BOARDS 사용)
+            flat_board_pages: 단일 게시판당 수집 페이지 수
+            flat_board_posts_per_page: 단일 게시판 페이지당 게시글 수
         """
         groups = target_groups or JOB_GROUPS
         result = CrawlResult()
         start = time.time()
 
-        logger.info("크롤링 시작 — 직업군: %d개", len(groups))
+        logger.info("크롤링 시작 — 직업군: %d개, 단일게시판: %s", len(groups), include_flat_boards)
 
         async with aiohttp.ClientSession(
             cookie_jar=aiohttp.CookieJar()
         ) as session:
+            # ── 1) 직업 게시판 (전사/마법사/궁수/도적/해적) ──
             for group_id, group_name in groups.items():
                 logger.info("[%s] 직업군 크롤링 시작", group_name)
 
-                # 직업 목록 수집
                 jobs = await self.get_job_list(session, group_id)
                 if not jobs:
                     logger.warning("[%s] 직업 목록 수집 실패", group_name)
@@ -359,9 +476,29 @@ class InvenCrawler:
 
                 await asyncio.sleep(self.group_delay)
 
+            # ── 2) 단일 게시판 (실시간 소식 2314, 팁과 노하우 2304) ──
+            if include_flat_boards:
+                flat = flat_boards or FLAT_BOARDS
+                for board_id, board_label in flat.items():
+                    logger.info("[정보공유/%s] 단일 게시판 크롤링 (board_id=%s)", board_label, board_id)
+                    try:
+                        posts = await self._scrape_flat_board(
+                            session, board_id, board_label,
+                            max_pages=flat_board_pages,
+                            max_posts_per_page=flat_board_posts_per_page,
+                            skip_notice=False,  # 공지·이벤트 포함
+                        )
+                        result.posts.extend(posts)
+                        result.total_jobs_crawled += 1
+                        logger.info("[정보공유/%s] %d개 게시글 수집", board_label, len(posts))
+                    except Exception as e:
+                        logger.error("[정보공유/%s] 크롤링 실패: %s", board_label, e)
+                        result.errors += 1
+                    await asyncio.sleep(self.group_delay)
+
         result.elapsed_seconds = time.time() - start
         logger.info(
-            "크롤링 완료 — 게시글: %d개, 직업: %d개, 에러: %d, 소요: %.1f초",
+            "크롤링 완료 — 게시글: %d개, 직업/게시판: %d개, 에러: %d, 소요: %.1f초",
             len(result.posts), result.total_jobs_crawled,
             result.errors, result.elapsed_seconds,
         )

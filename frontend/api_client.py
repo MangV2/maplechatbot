@@ -9,6 +9,9 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 REQUEST_TIMEOUT = 30.0
 
 
+# ── 채팅 API ───────────────────────────────────────────
+
+
 def chat(query: str, top_k: int = 5, use_cot: bool = True) -> dict:
     """동기 채팅 API 호출."""
     with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
@@ -45,6 +48,65 @@ def chat_stream(
                             yield json.loads(data)
                         except json.JSONDecodeError:
                             continue
+
+
+# ── 세션 API ──────────────────────────────────────────
+
+
+def list_sessions() -> list[dict]:
+    """세션 목록 조회."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{API_BASE_URL}/sessions")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return []
+
+
+def create_session() -> dict:
+    """새 세션 생성."""
+    with httpx.Client(timeout=5.0) as client:
+        resp = client.post(f"{API_BASE_URL}/sessions")
+        resp.raise_for_status()
+        return resp.json()
+
+
+def get_session(session_id: str) -> dict | None:
+    """세션 상세 (메시지 포함) 조회."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{API_BASE_URL}/sessions/{session_id}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+def save_message(session_id: str, role: str, content: str, references: list | None = None):
+    """세션에 메시지 저장."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(
+                f"{API_BASE_URL}/sessions/{session_id}/messages",
+                json={"role": role, "content": content, "references": references},
+            )
+            resp.raise_for_status()
+    except Exception:
+        pass  # 저장 실패해도 UI는 계속 동작
+
+
+def delete_session(session_id: str):
+    """세션 삭제."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.delete(f"{API_BASE_URL}/sessions/{session_id}")
+            resp.raise_for_status()
+    except Exception:
+        pass
+
+
+# ── 헬스체크 ──────────────────────────────────────────
 
 
 def health_check() -> dict:
