@@ -2,7 +2,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -70,11 +70,17 @@ class UpdateTitleRequest(BaseModel):
 
 
 @router.get("", response_model=list[SessionOut])
-def list_sessions(db: Session = Depends(get_db)):
-    """전체 세션 목록 (최신순)."""
+def list_sessions(
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """전체 세션 목록 (최신순). limit/offset으로 페이징."""
     sessions = (
         db.query(ChatSession)
         .order_by(ChatSession.updated_at.desc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
     result = []

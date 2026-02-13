@@ -53,11 +53,14 @@ def chat_stream(
 # ── 세션 API ──────────────────────────────────────────
 
 
-def list_sessions() -> list[dict]:
-    """세션 목록 조회."""
+def list_sessions(limit: int = 100, offset: int = 0) -> list[dict]:
+    """세션 목록 조회 (페이징)."""
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{API_BASE_URL}/sessions")
+            resp = client.get(
+                f"{API_BASE_URL}/sessions",
+                params={"limit": limit, "offset": offset},
+            )
             resp.raise_for_status()
             return resp.json()
     except Exception:
@@ -118,3 +121,84 @@ def health_check() -> dict:
             return response.json()
     except Exception as e:
         return {"status": "error", "qdrant_status": str(e), "document_count": 0}
+
+
+# ── Admin API ──────────────────────────────────────────
+
+
+def admin_crawl_status() -> dict:
+    """크롤링 상태 조회."""
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.get(f"{API_BASE_URL}/admin/crawl/status")
+        resp.raise_for_status()
+        return resp.json()
+
+
+def admin_crawl_trigger(
+    max_jobs_per_group: int | None = 3,
+    max_pages: int = 1,
+    max_posts_per_page: int = 10,
+) -> dict:
+    """수동 크롤링 실행."""
+    with httpx.Client(timeout=300.0) as client:
+        resp = client.post(
+            f"{API_BASE_URL}/admin/crawl",
+            json={
+                "max_jobs_per_group": max_jobs_per_group,
+                "max_pages": max_pages,
+                "max_posts_per_page": max_posts_per_page,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def admin_crawl_history() -> list[dict]:
+    """최근 크롤링 이력."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{API_BASE_URL}/admin/crawl/history")
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("history", [])
+    except Exception:
+        return []
+
+
+def admin_health() -> dict:
+    """Admin 헬스 체크."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{API_BASE_URL}/admin/health")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        return {"status": "error", "qdrant_status": str(e), "document_count": 0}
+
+
+def admin_qdrant_stats() -> dict:
+    """Qdrant 현황 (직업/직업군별 개수)."""
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.get(f"{API_BASE_URL}/admin/qdrant/stats")
+        resp.raise_for_status()
+        return resp.json()
+
+
+def admin_qdrant_documents(
+    job: str | None = None,
+    job_group: str | None = None,
+    limit: int = 20,
+    offset: str | None = None,
+) -> dict:
+    """Qdrant 저장 문서 목록 (필터·페이징)."""
+    params: dict = {"limit": limit}
+    if job:
+        params["job"] = job
+    if job_group:
+        params["직업군"] = job_group
+    if offset is not None:
+        params["offset"] = offset
+    with httpx.Client(timeout=15.0) as client:
+        resp = client.get(f"{API_BASE_URL}/admin/qdrant/documents", params=params)
+        resp.raise_for_status()
+        return resp.json()

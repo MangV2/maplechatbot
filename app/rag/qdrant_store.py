@@ -1,5 +1,6 @@
 """Qdrant 벡터 DB 클라이언트 래퍼."""
 import logging
+from collections import Counter
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -150,3 +151,60 @@ class QdrantStore:
             if offset is None:
                 break
         return sorted(all_jobs)
+
+    def get_job_stats(self) -> dict[str, Any]:
+        """직업/직업군별 개수 및 전체 포인트 수."""
+        info = self.client.get_collection(self.collection_name)
+        jobs: Counter = Counter()
+        groups: Counter = Counter()
+        offset = None
+        while True:
+            results, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=100,
+                offset=offset,
+                with_payload=["직업", "직업군"],
+            )
+            for point in results:
+                job = point.payload.get("직업")
+                group = point.payload.get("직업군")
+                if job:
+                    jobs[job] += 1
+                if group:
+                    groups[group] += 1
+            if offset is None:
+                break
+        return {
+            "points_count": info.points_count,
+            "jobs": dict(jobs.most_common()),
+            "groups": dict(groups.most_common()),
+        }
+
+    def scroll_documents(
+        self,
+        limit: int = 20,
+        offset: int | None = None,
+        job: str | None = None,
+        job_group: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """필터 조건으로 문서 목록 스크롤. (items, next_offset) 반환."""
+        conditions = []
+        if job:
+            conditions.append(
+                FieldCondition(key="직업", match=MatchValue(value=job))
+            )
+        if job_group:
+            conditions.append(
+                FieldCondition(key="직업군", match=MatchValue(value=job_group))
+            )
+        scroll_filter = Filter(must=conditions) if conditions else None
+        results, next_offset = self.client.scroll(
+            collection_name=self.collection_name,
+            limit=limit,
+            offset=offset,
+            scroll_filter=scroll_filter,
+            with_payload=True,
+            with_vectors=False,
+        )
+        items = [{"id": pt.id, **pt.payload} for pt in results]
+        return items, next_offset

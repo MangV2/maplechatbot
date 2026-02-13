@@ -1,5 +1,6 @@
 """주간 크롤링 스케줄러 (APScheduler)."""
 import logging
+from collections import deque
 from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -9,12 +10,30 @@ from app.crawler.pipeline import CrawlPipeline, PipelineResult
 
 logger = logging.getLogger(__name__)
 
-# ── 스케줄러 상태 ──────────────────────────────────────
+CRAWL_HISTORY_MAX = 50
 
 _scheduler: BackgroundScheduler | None = None
 _last_result: PipelineResult | None = None
 _last_run_at: datetime | None = None
 _is_running: bool = False
+_crawl_history: deque = deque(maxlen=CRAWL_HISTORY_MAX)
+
+
+def _push_crawl_history(triggered_by: str, run_at: datetime, result: PipelineResult):
+    """크롤링 이력에 한 건 추가."""
+    _crawl_history.append({
+        "run_at": run_at.isoformat(),
+        "triggered_by": triggered_by,
+        "crawled": result.crawled,
+        "upserted": result.upserted,
+        "errors": result.errors,
+        "elapsed_seconds": round(result.elapsed_seconds, 1),
+    })
+
+
+def get_crawl_history() -> list[dict]:
+    """최근 크롤링 이력 (최신순)."""
+    return list(reversed(_crawl_history))
 
 
 def _run_weekly_crawl():
@@ -36,6 +55,7 @@ def _run_weekly_crawl():
             max_pages=2,             # 직업당 2페이지
             max_posts_per_page=20,   # 페이지당 최대 20개
         )
+        _push_crawl_history("scheduled", _last_run_at, _last_result)
         logger.info(
             "주간 크롤링 완료: 크롤링 %d → 적재 %d (에러 %d)",
             _last_result.crawled, _last_result.upserted, _last_result.errors,
@@ -43,6 +63,7 @@ def _run_weekly_crawl():
     except Exception as e:
         logger.exception("주간 크롤링 실패: %s", e)
         _last_result = PipelineResult(errors=1)
+        _push_crawl_history("scheduled", _last_run_at, _last_result)
     finally:
         _is_running = False
 
