@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "postgres"
-    postgres_password: str = "0916"
+    postgres_password: str = ""  # .env에서 설정 필수
     postgres_database: str = "maple_rag"
 
     # Qdrant
