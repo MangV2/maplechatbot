@@ -134,21 +134,41 @@ def admin_crawl_status() -> dict:
         return resp.json()
 
 
+def admin_suggested_since_date() -> str | None:
+    """수집 시작일 자동 제안 (마지막 크롤 날짜 → Qdrant 최신 문서 날짜). 없으면 None."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{API_BASE_URL}/admin/crawl/suggested-since-date")
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("since_date")
+    except Exception:
+        return None
+
+
 def admin_crawl_trigger(
     max_jobs_per_group: int | None = 3,
     max_pages: int = 1,
     max_posts_per_page: int = 10,
+    since_date: str | None = None,
+    background: bool = True,
 ) -> dict:
-    """수동 크롤링 실행."""
-    with httpx.Client(timeout=300.0) as client:
-        resp = client.post(
-            f"{API_BASE_URL}/admin/crawl",
-            json={
-                "max_jobs_per_group": max_jobs_per_group,
-                "max_pages": max_pages,
-                "max_posts_per_page": max_posts_per_page,
-            },
-        )
+    """수동 크롤링 실행. since_date가 있으면 해당 날짜 이후 작성글만 수집.
+    background=True면 백그라운드 실행 후 202 반환(진행률·로그 폴링 가능).
+    """
+    payload = {
+        "max_jobs_per_group": max_jobs_per_group,
+        "max_pages": max_pages,
+        "max_posts_per_page": max_posts_per_page,
+        "background": background,
+    }
+    if since_date:
+        payload["since_date"] = since_date
+    with httpx.Client(timeout=30.0 if background else 300.0) as client:
+        resp = client.post(f"{API_BASE_URL}/admin/crawl", json=payload)
+        # 202 Accepted = 백그라운드 시작됨
+        if resp.status_code == 202:
+            return resp.json()
         resp.raise_for_status()
         return resp.json()
 

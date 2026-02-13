@@ -1,6 +1,8 @@
 """Qdrant 벡터 DB 클라이언트 래퍼."""
 import logging
+import re
 from collections import Counter
+from datetime import datetime
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -208,3 +210,39 @@ class QdrantStore:
         )
         items = [{"id": pt.id, **pt.payload} for pt in results]
         return items, next_offset
+
+    def get_max_written_date(self) -> datetime | None:
+        """Qdrant에 저장된 게시물 중 가장 최근 작성일 반환."""
+        from app.crawler.pipeline import parse_post_date
+
+        max_date: datetime | None = None
+        offset = None
+        while True:
+            results, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in results:
+                payload = point.payload or {}
+                # 작성일 키 우선, 없으면 payload 값 중 날짜 형태인 것 시도
+                written_date_str = payload.get("작성일") or payload.get("date") or payload.get("작성일시")
+                if written_date_str:
+                    d = parse_post_date(str(written_date_str))
+                    if d:
+                        if max_date is None or d > max_date:
+                            max_date = d
+                        continue
+                # 키로 못 찾은 경우 값이 날짜 형태인 항목 탐색
+                for v in payload.values():
+                    if v and isinstance(v, str) and re.match(r"\d{4}[.-]\d", v.strip()):
+                        d = parse_post_date(v)
+                        if d:
+                            if max_date is None or d > max_date:
+                                max_date = d
+                            break
+            if offset is None:
+                break
+        return max_date

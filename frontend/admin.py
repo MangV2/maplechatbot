@@ -1,4 +1,5 @@
 """관리자 UI: 헬스, 크롤링, 세션, Qdrant 저장 내용 조회."""
+import time
 import streamlit as st
 
 from api_client import (
@@ -8,6 +9,7 @@ from api_client import (
     admin_health,
     admin_qdrant_documents,
     admin_qdrant_stats,
+    admin_suggested_since_date,
     delete_session,
     get_session,
     list_sessions,
@@ -67,7 +69,18 @@ with tab2:
     try:
         status = admin_crawl_status()
         st.write("**스케줄러:**", "실행 중" if status.get("scheduler_running") else "중지")
-        st.write("**현재 크롤링:**", "진행 중" if status.get("is_crawling") else "대기 중")
+        prog = status.get("crawl_progress") or {}
+        jobs_done, jobs_total = prog.get("jobs_done", 0), prog.get("jobs_total", 0)
+        if status.get("is_crawling"):
+            if jobs_total > 0:
+                st.write("**현재 크롤링:**", f"진행 중 ({jobs_done}/{jobs_total} 직업·게시판)")
+            else:
+                st.write("**현재 크롤링:**", "진행 중")
+            st.caption("진행 중일 때 아래 버튼으로 새로고침하면 진행 상황이 갱신됩니다.")
+        else:
+            st.write("**현재 크롤링:**", "대기 중")
+        if st.button("상태 새로고침", key="refresh_crawl_status"):
+            st.rerun()
         st.write("**마지막 실행:**", status.get("last_run_at") or "-")
         st.write("**다음 실행:**", status.get("next_run_at") or "-")
         if status.get("last_result"):
@@ -79,34 +92,93 @@ with tab2:
         st.error(str(e))
 
     st.subheader("수동 크롤링 실행")
+    try:
+        suggested = admin_suggested_since_date()
+    except Exception as e:
+        suggested = None
+        st.warning(f"수집 시작일 API 호출 실패: {e}")
+    if suggested:
+        st.info(f"자동 제안된 수집 시작일: **{suggested}** (저장된 크롤 날짜 또는 Qdrant 최신 문서 기준)")
+    else:
+        st.caption("자동 제안 없음 — 아래에서 수집 시작일을 직접 입력해 주세요.")
+    if st.button("제안 날짜 다시 불러오기", key="refresh_suggested"):
+        st.rerun()
     with st.form("crawl_form"):
-        max_jobs = st.number_input("직업군당 최대 직업 수 (0=전체)", min_value=0, max_value=50, value=3)
-        max_pages = st.number_input("직업별 페이지 수", min_value=1, max_value=10, value=1)
-        max_posts = st.number_input("페이지당 최대 게시글 수", min_value=1, max_value=50, value=10)
+        max_jobs = st.number_input("직업군당 최대 직업 수 (0=전체)", min_value=0, max_value=50, value=0)
+        max_pages = st.number_input("직업별 페이지 수", min_value=1, max_value=50, value=10)
+        max_posts = st.number_input("페이지당 최대 게시글 수", min_value=1, max_value=200, value=100)
+        if suggested:
+            since_date_label = "수집 시작일 (YYYY-MM-DD) — 자동 제안됨"
+            since_date_placeholder = ""
+            since_date_help = "저장된 마지막 크롤 날짜 또는 Qdrant 최신 문서 날짜 기준으로 자동 채움."
+        else:
+            since_date_label = "수집 시작일 (YYYY-MM-DD)"
+            since_date_placeholder = "정보없음 수동입력 필요"
+            since_date_help = "자동 제안 없음. 위에 표시된 대로 날짜를 직접 입력해 주세요."
+        since_date = st.text_input(
+            since_date_label,
+            value=suggested or "",
+            placeholder=since_date_placeholder,
+            help=since_date_help,
+            key="since_date_input",
+        )
+        if not suggested and not since_date:
+            st.caption("⚠️ 정보없음 — 수동입력 필요")
         submitted = st.form_submit_button("크롤링 실행")
     if submitted:
         if status.get("is_crawling"):
             st.warning("이미 크롤링이 진행 중입니다.")
         else:
-            with st.spinner("크롤링 실행 중..."):
-                try:
-                    result = admin_crawl_trigger(
-                        max_jobs_per_group=None if max_jobs == 0 else max_jobs,
-                        max_pages=max_pages,
-                        max_posts_per_page=max_posts,
-                    )
-                    st.success("완료: 크롤링 %d → 적재 %d, 에러 %d (%.1f초)" % (
+            try:
+                result = admin_crawl_trigger(
+                    max_jobs_per_group=None if max_jobs == 0 else max_jobs,
+                    max_pages=max_pages,
+                    max_posts_per_page=max_posts,
+                    since_date=since_date.strip() if since_date.strip() else None,
+                    background=True,
+                )
+                # 202 = 백그라운드 시작 → 진행률·로그 폴링
+                if result.get("crawled", 0) == 0 and result.get("message", "").find("백그라운드") != -1:
+                    progress_placeholder = st.empty()
+                    log_placeholder = st.empty()
+                    while True:
+                        s = admin_crawl_status()
+                        prog = s.get("crawl_progress") or {}
+                        jd, jt = prog.get("jobs_done", 0), prog.get("jobs_total", 0)
+                        logs = s.get("recent_logs") or []
+                        progress_placeholder.markdown(
+                            "**○ 크롤링 실행 중...** " + (f"({jd}/{jt} 직업·게시판)" if jt > 0 else "")
+                        )
+                        with log_placeholder.container():
+                            st.caption("진행 로그")
+                            st.code("\n".join(logs) if logs else "(로그 대기 중...)", language="text")
+                        if not s.get("is_crawling"):
+                            break
+                        time.sleep(2)
+                    progress_placeholder.empty()
+                    log_placeholder.empty()
+                    r = s.get("last_result")
+                    if r:
+                        st.success("완료: 크롤링 %d → 적재 %d, 스킵 %d, 에러 %d (%.1f초)" % (
+                            r.get("crawled", 0), r.get("upserted", 0),
+                            r.get("skipped", 0), r.get("errors", 0),
+                            r.get("elapsed_seconds", 0),
+                        ))
+                    st.rerun()
+                else:
+                    st.success("완료: 크롤링 %d → 적재 %d, 스킵 %d, 에러 %d (%.1f초)" % (
                         result.get("crawled", 0), result.get("upserted", 0),
-                        result.get("errors", 0), result.get("elapsed_seconds", 0)
+                        result.get("skipped", 0), result.get("errors", 0),
+                        result.get("elapsed_seconds", 0),
                     ))
-                except Exception as e:
-                    st.error(str(e))
+            except Exception as e:
+                st.error(str(e))
 
     st.subheader("최근 크롤링 이력")
     try:
         history = admin_crawl_history()
         if history:
-            st.dataframe(history, use_container_width=True)
+            st.dataframe(history, width="stretch")
         else:
             st.caption("이력 없음")
     except Exception as e:
@@ -175,7 +247,7 @@ with tab4:
                     "제목": ((it.get("제목", ""))[:60] + "…") if len(it.get("제목", "")) > 60 else it.get("제목", ""),
                     "본문 미리보기": (body[:80] + "…") if len(body) > 80 else body,
                 })
-            st.dataframe(rows, use_container_width=True)
+            st.dataframe(rows, width="stretch")
             if next_offset is not None:
                 if st.button("다음 페이지"):
                     st.session_state.qdrant_next_offset = next_offset

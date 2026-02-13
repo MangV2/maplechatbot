@@ -9,6 +9,8 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Callable
 from urllib.parse import quote
 
 import aiohttp
@@ -284,9 +286,14 @@ class InvenCrawler:
         job_name: str,
         max_pages: int = 1,
         max_posts_per_page: int = 20,
+        since_date: datetime | None = None,
+        parse_post_date: Callable[[str], datetime | None] | None = None,
     ) -> list[CrawledPost]:
-        """특정 직업 게시판에서 게시글 수집."""
+        """특정 직업 게시판에서 게시글 수집. since_date가 있으면 작성일이 그 이전인 글이 나오면 해당 직업 크롤링 중단."""
         posts: list[CrawledPost] = []
+        since_utc = None
+        if since_date:
+            since_utc = since_date if since_date.tzinfo else since_date.replace(tzinfo=timezone.utc)
 
         for page in range(1, max_pages + 1):
             url = (
@@ -331,11 +338,27 @@ class InvenCrawler:
 
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+                page_posts: list[CrawledPost] = []
                 for r in results:
                     if isinstance(r, CrawledPost):
-                        posts.append(r)
+                        page_posts.append(r)
                     elif isinstance(r, Exception):
                         logger.error("게시글 크롤링 실패: %s", r)
+
+                if since_utc and parse_post_date and page_posts:
+                    found_old = False
+                    for p in page_posts:
+                        d = parse_post_date(p.작성일)
+                        if d is not None and d < since_utc:
+                            found_old = True
+                            break
+                    page_posts = [p for p in page_posts if (lambda x: (x is not None) and (x >= since_utc))(parse_post_date(p.작성일))]
+                    posts.extend(page_posts)
+                    if found_old:
+                        logger.info("[%s/%s] 페이지 %d에서 수집 시작일 이전 글 발견 → 해당 직업 크롤링 중단", group_name, job_name, page)
+                        return posts
+                else:
+                    posts.extend(page_posts)
 
         return posts
 
@@ -349,12 +372,17 @@ class InvenCrawler:
         max_pages: int = 1,
         max_posts_per_page: int = 20,
         skip_notice: bool = False,
+        since_date: datetime | None = None,
+        parse_post_date: Callable[[str], datetime | None] | None = None,
     ) -> list[CrawledPost]:
         """단일 게시판(실시간 소식 / 팁과 노하우)에서 게시글 수집.
-        직업군='정보공유', 직업=board_label(실시간소식|팁과노하우)로 저장.
+        since_date가 있으면 수집 시작일 이전 글이 나오면 해당 게시판 크롤링 중단.
         """
         posts: list[CrawledPost] = []
         group_name = "정보공유"
+        since_utc = None
+        if since_date:
+            since_utc = since_date if since_date.tzinfo else since_date.replace(tzinfo=timezone.utc)
 
         for page in range(1, max_pages + 1):
             url = f"{self.BASE_URL}{board_id}?p={page}"
@@ -396,11 +424,25 @@ class InvenCrawler:
 
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+                page_posts = []
                 for r in results:
                     if isinstance(r, CrawledPost):
-                        posts.append(r)
+                        page_posts.append(r)
                     elif isinstance(r, Exception):
                         logger.error("게시글 크롤링 실패: %s", r)
+
+                if since_utc and parse_post_date and page_posts:
+                    found_old = any(
+                        (lambda d: d is not None and d < since_utc)(parse_post_date(p.작성일))
+                        for p in page_posts
+                    )
+                    page_posts = [p for p in page_posts if (lambda dt: dt is not None and dt >= since_utc)(parse_post_date(p.작성일))]
+                    posts.extend(page_posts)
+                    if found_old:
+                        logger.info("[%s/%s] 페이지 %d에서 수집 시작일 이전 글 발견 → 크롤링 중단", group_name, board_label, page)
+                        return posts
+                else:
+                    posts.extend(page_posts)
 
         return posts
 
@@ -416,6 +458,9 @@ class InvenCrawler:
         flat_boards: dict[str, str] | None = None,
         flat_board_pages: int = 1,
         flat_board_posts_per_page: int = 20,
+        since_date: datetime | None = None,
+        parse_post_date: Callable[[str], datetime | None] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> CrawlResult:
         """전체 크롤링 실행.
 
@@ -428,12 +473,22 @@ class InvenCrawler:
             flat_boards: 단일 게시판 ID→라벨 (None이면 FLAT_BOARDS 사용)
             flat_board_pages: 단일 게시판당 수집 페이지 수
             flat_board_posts_per_page: 단일 게시판 페이지당 게시글 수
+            since_date: 이 날짜 이전 글이 나오면 해당 직업/게시판 크롤링 중단 (불필요한 크롤 최소화)
+            parse_post_date: 작성일 문자열 → datetime 파싱 함수 (since_date 사용 시 필수)
+            progress_callback: (완료된 직업/게시판 수, 전체 수) 호출하여 진행 상황 보고
         """
         groups = target_groups or JOB_GROUPS
         result = CrawlResult()
         start = time.time()
+        jobs_done = 0
+        jobs_total = 0
+
+        def report_progress():
+            if progress_callback:
+                progress_callback(jobs_done, jobs_total)
 
         logger.info("크롤링 시작 — 직업군: %d개, 단일게시판: %s", len(groups), include_flat_boards)
+        report_progress()
 
         async with aiohttp.ClientSession(
             cookie_jar=aiohttp.CookieJar()
@@ -453,6 +508,8 @@ class InvenCrawler:
                 jobs_to_crawl = (
                     jobs if max_jobs_per_group is None else jobs[:max_jobs_per_group]
                 )
+                jobs_total += len(jobs_to_crawl)
+                report_progress()
 
                 for job in jobs_to_crawl:
                     logger.info("[%s/%s] 게시판 크롤링", group_name, job)
@@ -461,6 +518,8 @@ class InvenCrawler:
                             session, group_id, group_name, job,
                             max_pages=max_pages,
                             max_posts_per_page=max_posts_per_page,
+                            since_date=since_date,
+                            parse_post_date=parse_post_date,
                         )
                         result.posts.extend(posts)
                         result.total_jobs_crawled += 1
@@ -472,6 +531,8 @@ class InvenCrawler:
                         logger.error("[%s/%s] 크롤링 실패: %s", group_name, job, e)
                         result.errors += 1
 
+                    jobs_done += 1
+                    report_progress()
                     await asyncio.sleep(self.request_delay)
 
                 await asyncio.sleep(self.group_delay)
@@ -479,6 +540,8 @@ class InvenCrawler:
             # ── 2) 단일 게시판 (실시간 소식 2314, 팁과 노하우 2304) ──
             if include_flat_boards:
                 flat = flat_boards or FLAT_BOARDS
+                jobs_total += len(flat)
+                report_progress()
                 for board_id, board_label in flat.items():
                     logger.info("[정보공유/%s] 단일 게시판 크롤링 (board_id=%s)", board_label, board_id)
                     try:
@@ -487,6 +550,8 @@ class InvenCrawler:
                             max_pages=flat_board_pages,
                             max_posts_per_page=flat_board_posts_per_page,
                             skip_notice=False,  # 공지·이벤트 포함
+                            since_date=since_date,
+                            parse_post_date=parse_post_date,
                         )
                         result.posts.extend(posts)
                         result.total_jobs_crawled += 1
@@ -494,6 +559,8 @@ class InvenCrawler:
                     except Exception as e:
                         logger.error("[정보공유/%s] 크롤링 실패: %s", board_label, e)
                         result.errors += 1
+                    jobs_done += 1
+                    report_progress()
                     await asyncio.sleep(self.group_delay)
 
         result.elapsed_seconds = time.time() - start

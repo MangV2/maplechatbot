@@ -1,12 +1,21 @@
 """관리 API: 크롤링 트리거, 상태 조회, Qdrant 현황, 헬스, 크롤링 이력."""
+import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.crawler.pipeline import CrawlPipeline
-from app.crawler.scheduler import get_scheduler_status, get_crawl_history, _is_running, _push_crawl_history
+from app.crawler.scheduler import (
+    get_scheduler_status,
+    get_crawl_history,
+    set_crawl_progress,
+    set_crawl_running,
+    _is_running,
+    _push_crawl_history,
+)
 from app.rag.qdrant_store import QdrantStore
 from app.schemas.chat import HealthResponse
 
@@ -23,9 +32,17 @@ class CrawlTriggerRequest(BaseModel):
     max_jobs_per_group: int | None = Field(
         default=3, description="직업군당 최대 직업 수 (null이면 전체)"
     )
-    max_pages: int = Field(default=1, ge=1, le=10, description="직업별 페이지 수")
+    max_pages: int = Field(default=1, ge=1, le=50, description="직업별 페이지 수")
     max_posts_per_page: int = Field(
-        default=10, ge=1, le=50, description="페이지당 최대 게시글 수"
+        default=10, ge=1, le=200, description="페이지당 최대 게시글 수"
+    )
+    since_date: str | None = Field(
+        default=None,
+        description="수집 시작일 (YYYY-MM-DD 형식). None이면 자동 결정 (저장된 날짜 → Qdrant 최신 작성일 → 전체 수집)"
+    )
+    background: bool = Field(
+        default=True,
+        description="True면 백그라운드 실행 후 즉시 202 반환(진행률·로그 폴링 가능). False면 완료까지 대기."
     )
 
 
@@ -34,6 +51,8 @@ class CrawlStatusResponse(BaseModel):
 
     scheduler_running: bool
     is_crawling: bool
+    crawl_progress: dict | None = None  # {"jobs_done": int, "jobs_total": int}
+    recent_logs: list[str] = []  # 크롤링 진행 로그 (app.crawler)
     last_run_at: str | None = None
     next_run_at: str | None = None
     last_result: dict | None = None
@@ -45,6 +64,7 @@ class CrawlTriggerResponse(BaseModel):
     message: str
     crawled: int = 0
     upserted: int = 0
+    skipped: int = 0
     errors: int = 0
     elapsed_seconds: float = 0.0
 
@@ -54,6 +74,7 @@ class CrawlHistoryEntry(BaseModel):
     triggered_by: str
     crawled: int
     upserted: int
+    skipped: int = 0
     errors: int
     elapsed_seconds: float
 
@@ -73,7 +94,94 @@ class QdrantDocumentsResponse(BaseModel):
     next_offset: int | str | None = None
 
 
+class SuggestedSinceDateResponse(BaseModel):
+    """수집 시작일 자동 제안 (마지막 크롤 날짜 → Qdrant 최신 문서 날짜)."""
+    since_date: str | None = None  # YYYY-MM-DD, 없으면 null
+
+
+class DebugSinceDateResponse(BaseModel):
+    """수집 시작일 자동 결정 단계별 확인용."""
+    step1_last_crawl_file_exists: bool = False
+    step1_last_crawl_file_value: str | None = None
+    step2_qdrant_points_count: int = 0
+    step2_qdrant_max_date: str | None = None
+    step2_qdrant_sample_payload_keys: list[str] = []
+    step2_qdrant_sample_written_dates: list[str] = []
+    step3_suggested_since_date: str | None = None
+    error: str | None = None
+
+
 # ── 엔드포인트 ─────────────────────────────────────────
+
+@router.get("/crawl/debug-since-date", response_model=DebugSinceDateResponse)
+def debug_since_date():
+    """수집 시작일 자동 결정 단계별 확인: 1) 저장 파일 2) Qdrant 최신 날짜 3) 최종 제안값."""
+    from app.crawler.pipeline import load_last_crawl_date, determine_since_date, LAST_CRAWL_DATE_FILE
+
+    out = DebugSinceDateResponse()
+    try:
+        # 1단계: 저장된 마지막 크롤링 날짜 파일
+        out.step1_last_crawl_file_exists = LAST_CRAWL_DATE_FILE.exists()
+        if out.step1_last_crawl_file_exists:
+            try:
+                content = LAST_CRAWL_DATE_FILE.read_text(encoding="utf-8").strip()
+                out.step1_last_crawl_file_value = content or "(비어 있음)"
+            except Exception as e:
+                out.step1_last_crawl_file_value = f"(읽기 실패: {e})"
+        else:
+            out.step1_last_crawl_file_value = None
+
+        # 2단계: Qdrant에서 최신 날짜 + 샘플 payload
+        store = QdrantStore()
+        try:
+            info = store.client.get_collection(store.collection_name)
+            out.step2_qdrant_points_count = info.points_count
+        except Exception as e:
+            out.error = f"Qdrant 컬렉션 조회 실패: {e}"
+            return out
+
+        results, _ = store.client.scroll(
+            collection_name=store.collection_name,
+            limit=5,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if results:
+            out.step2_qdrant_sample_payload_keys = list((results[0].payload or {}).keys())
+            for pt in results:
+                p = pt.payload or {}
+                for k, v in p.items():
+                    if v is not None and v != "":
+                        if "작성" in k or "date" in k.lower() or k == "작성일":
+                            out.step2_qdrant_sample_written_dates.append(f"{k}={repr(v)}")
+                if len(out.step2_qdrant_sample_written_dates) >= 5:
+                    break
+            if not out.step2_qdrant_sample_written_dates:
+                out.step2_qdrant_sample_written_dates = [
+                    f"{k}={repr((results[0].payload or {}).get(k))}" for k in out.step2_qdrant_sample_payload_keys[:10]
+                ]
+
+        max_dt = store.get_max_written_date()
+        out.step2_qdrant_max_date = max_dt.strftime("%Y-%m-%d %H:%M") if max_dt else None
+
+        # 3단계: 최종 제안값
+        dt = determine_since_date(store)
+        out.step3_suggested_since_date = dt.strftime("%Y-%m-%d") if dt else None
+    except Exception as e:
+        out.error = str(e)
+    return out
+
+
+@router.get("/crawl/suggested-since-date", response_model=SuggestedSinceDateResponse)
+def get_suggested_since_date():
+    """수집 시작일 자동 제안: 저장된 마지막 크롤 날짜 → Qdrant 최신 문서 날짜. 없으면 null."""
+    from app.crawler.pipeline import determine_since_date
+    store = QdrantStore()
+    dt = determine_since_date(store)
+    if dt is None:
+        return SuggestedSinceDateResponse(since_date=None)
+    return SuggestedSinceDateResponse(since_date=dt.strftime("%Y-%m-%d"))
+
 
 @router.get("/crawl/status", response_model=CrawlStatusResponse)
 async def crawl_status():
@@ -81,38 +189,102 @@ async def crawl_status():
     return CrawlStatusResponse(**get_scheduler_status())
 
 
-@router.post("/crawl", response_model=CrawlTriggerResponse)
+def _run_manual_crawl_sync(
+    max_jobs_per_group: int | None,
+    max_pages: int,
+    max_posts_per_page: int,
+    since_date_dt: datetime | None,
+):
+    """백그라운드 스레드에서 실행하는 동기 크롤링."""
+    set_crawl_running(True)
+    set_crawl_progress(0, 0)
+    try:
+        pipeline = CrawlPipeline()
+        result = pipeline.run_sync(
+            max_jobs_per_group=max_jobs_per_group,
+            max_pages=max_pages,
+            max_posts_per_page=max_posts_per_page,
+            since_date=since_date_dt,
+            progress_callback=set_crawl_progress,
+        )
+        _push_crawl_history("manual", datetime.now(timezone.utc), result)
+        return result
+    finally:
+        set_crawl_running(False)
+
+
+@router.post("/crawl")
 async def trigger_crawl(request: CrawlTriggerRequest):
-    """수동으로 크롤링 파이프라인을 실행합니다."""
+    """수동으로 크롤링 파이프라인을 실행합니다. background=True면 백그라운드 실행 후 202 반환."""
     if _is_running:
         raise HTTPException(
             status_code=409, detail="크롤링이 이미 진행 중입니다."
         )
 
-    try:
-        logger.info(
-            "수동 크롤링 트리거: jobs=%s, pages=%d, posts=%d",
-            request.max_jobs_per_group, request.max_pages, request.max_posts_per_page,
+    since_date_dt = None
+    if request.since_date:
+        try:
+            since_date_dt = datetime.strptime(request.since_date, "%Y-%m-%d")
+            since_date_dt = since_date_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"잘못된 날짜 형식: {request.since_date}. YYYY-MM-DD 형식이어야 합니다.",
+            )
+
+    logger.info(
+        "수동 크롤링 트리거: jobs=%s, pages=%d, posts=%d, since_date=%s, background=%s",
+        request.max_jobs_per_group, request.max_pages, request.max_posts_per_page,
+        request.since_date or "자동", request.background,
+    )
+
+    if request.background:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(
+            None,
+            _run_manual_crawl_sync,
+            request.max_jobs_per_group,
+            request.max_pages,
+            request.max_posts_per_page,
+            since_date_dt,
         )
+        return JSONResponse(
+            status_code=202,
+            content={
+                "message": "크롤링이 백그라운드에서 시작되었습니다. 진행 상황은 상태 새로고침으로 확인하세요.",
+                "crawled": 0,
+                "upserted": 0,
+                "skipped": 0,
+                "errors": 0,
+                "elapsed_seconds": 0.0,
+            },
+        )
+
+    set_crawl_running(True)
+    set_crawl_progress(0, 0)
+    try:
         pipeline = CrawlPipeline()
         result = await pipeline.run(
             max_jobs_per_group=request.max_jobs_per_group,
             max_pages=request.max_pages,
             max_posts_per_page=request.max_posts_per_page,
+            since_date=since_date_dt,
+            progress_callback=set_crawl_progress,
         )
-        _push_crawl_history("manual", datetime.now(), result)
+        _push_crawl_history("manual", datetime.now(timezone.utc), result)
         return CrawlTriggerResponse(
             message="크롤링 완료",
             crawled=result.crawled,
             upserted=result.upserted,
+            skipped=result.skipped,
             errors=result.errors,
             elapsed_seconds=round(result.elapsed_seconds, 1),
         )
     except Exception as e:
         logger.exception("수동 크롤링 실패: %s", e)
-        raise HTTPException(
-            status_code=500, detail=f"크롤링 실패: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"크롤링 실패: {str(e)}")
+    finally:
+        set_crawl_running(False)
 
 
 @router.get("/crawl/history", response_model=CrawlHistoryResponse)

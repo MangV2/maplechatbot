@@ -255,7 +255,7 @@ with st.sidebar:
     # ── 새 채팅 버튼 (Gemini 스타일: 둥근 아웃라인) ──
     with st.container():
         st.markdown('<div class="new-chat-btn">', unsafe_allow_html=True)
-        if st.button("✏️  새 채팅", use_container_width=True):
+        if st.button("✏️  새 채팅", width="stretch"):
             _start_new_chat()
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
@@ -283,7 +283,7 @@ with st.sidebar:
                 if st.button(
                     display_title,
                     key=f"sess_{session_id}",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=is_active,
                 ):
                     _load_session(session_id)
@@ -312,7 +312,7 @@ with st.sidebar:
 
         st.divider()
         st.markdown("##### 📊 시스템 상태")
-        if st.button("상태 확인", use_container_width=True):
+        if st.button("상태 확인", width="stretch"):
             status = health_check()
             if status.get("status") == "ok":
                 st.success(f"✅ 연결됨 | 문서: {status.get('document_count', 0):,}개")

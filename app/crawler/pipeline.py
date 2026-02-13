@@ -2,14 +2,145 @@
 import asyncio
 import hashlib
 import logging
+import os
+import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable
 
 from app.crawler.inven_crawler import CrawlResult, CrawledPost, InvenCrawler
 from app.rag.openai_client import OpenAIClient
 from app.rag.qdrant_store import QdrantStore
 
 logger = logging.getLogger(__name__)
+
+# 마지막 크롤링 날짜 저장 파일 경로
+LAST_CRAWL_DATE_FILE = Path("data/last_crawl_date.txt")
+
+# 인벤/마이그레이션 작성일 파싱용 패턴
+_DATE_PATTERNS = [
+    (re.compile(r"^(\d{4})[.-](\d{1,2})[.-](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?"), "datetime"),
+    (re.compile(r"^(\d{4})[.-](\d{1,2})[.-](\d{1,2})T(\d{1,2}):(\d{2})"), "datetime_iso"),
+    (re.compile(r"^(\d{4})[.-](\d{1,2})[.-](\d{1,2})$"), "date_only"),
+    (re.compile(r"^(\d{1,2})[.-](\d{1,2})\s+(\d{1,2}):(\d{2})"), "m-d-hm"),
+    (re.compile(r"^(\d{1,2})[.-](\d{1,2})$"), "m-d"),
+]
+
+
+def parse_post_date(date_str: str) -> datetime | None:
+    """게시글 작성일 문자열을 datetime으로 파싱. 실패 시 None."""
+    if not date_str or not isinstance(date_str, str):
+        return None
+    s = date_str.strip()
+    if not s:
+        return None
+    now = datetime.now(timezone.utc)
+    for pattern, fmt in _DATE_PATTERNS:
+        m = pattern.match(s)
+        if not m:
+            continue
+        try:
+            if fmt == "datetime":
+                g = m.groups()
+                y, mo, d, h, mi = int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4])
+                return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
+            if fmt == "datetime_iso":
+                y, mo, d, h, mi = m.groups()
+                return datetime(int(y), int(mo), int(d), int(h), int(mi), tzinfo=timezone.utc)
+            if fmt == "date_only":
+                y, mo, d = m.groups()
+                return datetime(int(y), int(mo), int(d), tzinfo=timezone.utc)
+            if fmt == "m-d-hm":
+                mo, d, h, mi = m.groups()
+                return datetime(now.year, int(mo), int(d), int(h), int(mi), tzinfo=timezone.utc)
+            if fmt == "m-d":
+                mo, d = m.groups()
+                return datetime(now.year, int(mo), int(d), tzinfo=timezone.utc)
+        except (ValueError, TypeError, IndexError):
+            continue
+    return None
+
+
+def filter_posts_by_since(posts: list[CrawledPost], since_date: datetime) -> list[CrawledPost]:
+    """작성일이 since_date 이상인 게시글만 반환. 파싱 실패한 글은 제외(날짜 기준 수집 시)."""
+    since_date = since_date if since_date.tzinfo else since_date.replace(tzinfo=timezone.utc)
+    out = []
+    for p in posts:
+        d = parse_post_date(p.작성일)
+        if d is None:
+            continue
+        if d >= since_date:
+            out.append(p)
+    return out
+
+
+def get_max_written_date_from_posts(posts: list[CrawledPost]) -> datetime | None:
+    """게시글 목록에서 가장 최근 작성일 반환."""
+    dates = []
+    for p in posts:
+        d = parse_post_date(p.작성일)
+        if d:
+            dates.append(d)
+    return max(dates) if dates else None
+
+
+def load_last_crawl_date() -> datetime | None:
+    """저장된 마지막 크롤링 날짜 로드."""
+    if not LAST_CRAWL_DATE_FILE.exists():
+        return None
+    try:
+        content = LAST_CRAWL_DATE_FILE.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        # ISO 형식 또는 YYYY-MM-DD 형식 파싱
+        try:
+            dt = datetime.fromisoformat(content.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            # YYYY-MM-DD 형식 시도
+            dt = datetime.strptime(content, "%Y-%m-%d")
+            return dt.replace(tzinfo=timezone.utc)
+    except Exception as e:
+        logger.warning("마지막 크롤링 날짜 로드 실패: %s", e)
+        return None
+
+
+def save_last_crawl_date(date: datetime):
+    """마지막 크롤링 날짜 저장."""
+    try:
+        LAST_CRAWL_DATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # ISO 형식으로 저장 (UTC)
+        date_utc = date if date.tzinfo else date.replace(tzinfo=timezone.utc)
+        LAST_CRAWL_DATE_FILE.write_text(date_utc.isoformat(), encoding="utf-8")
+        logger.info("마지막 크롤링 날짜 저장: %s", date_utc.isoformat())
+    except Exception as e:
+        logger.error("마지막 크롤링 날짜 저장 실패: %s", e)
+
+
+def determine_since_date(store: QdrantStore) -> datetime | None:
+    """자동으로 since_date 결정: 1) 저장된 날짜 → 2) Qdrant 최신 작성일 → 3) None."""
+    # 1순위: 저장된 마지막 크롤링 날짜
+    last_date = load_last_crawl_date()
+    if last_date:
+        logger.info("저장된 마지막 크롤링 날짜 사용: %s", last_date.isoformat())
+        return last_date
+
+    # 2순위: Qdrant에서 가장 최근 작성일
+    try:
+        max_date = store.get_max_written_date()
+        if max_date:
+            logger.info("Qdrant 최신 작성일 사용: %s", max_date.isoformat())
+            return max_date
+    except Exception as e:
+        logger.warning("Qdrant 최신 작성일 조회 실패: %s", e)
+
+    # 3순위: 없음 (전체 수집)
+    logger.info("since_date 자동 결정 실패 → 전체 수집")
+    return None
 
 
 @dataclass
@@ -129,38 +260,75 @@ class CrawlPipeline:
         max_jobs_per_group: int | None = None,
         max_pages: int = 1,
         max_posts_per_page: int = 20,
+        since_date: datetime | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> PipelineResult:
-        """크롤링 → 임베딩 → Qdrant 적재 전체 파이프라인.
+        """크롤링 → (날짜 필터) → 임베딩 → Qdrant 적재.
 
         Args:
             max_jobs_per_group: 직업군당 수집할 최대 직업 수
             max_pages: 직업별 수집할 페이지 수
             max_posts_per_page: 페이지당 수집할 최대 게시글 수
+            since_date: 이 값이 있으면 해당 날짜 이후 작성글만 수집.
+                       None이면 자동 결정 (저장된 날짜 → Qdrant 최신 작성일 → 전체 수집)
+            progress_callback: (완료된 직업/게시판 수, 전체 수) 진행 상황 콜백
         """
         logger.info("=== 파이프라인 시작 ===")
         start = time.time()
 
-        # 1) 크롤링
+        # 1) since_date 자동 결정 (None인 경우)
+        if since_date is None:
+            since_date = determine_since_date(self.store)
+            if since_date:
+                logger.info("자동 결정된 수집 시작일: %s", since_date.isoformat())
+
+        # 2) 크롤링 (since_date 있으면 직업/게시판별로 이전 글 나오면 즉시 중단)
         crawl_result: CrawlResult = await self.crawler.crawl(
             max_jobs_per_group=max_jobs_per_group,
             max_pages=max_pages,
             max_posts_per_page=max_posts_per_page,
+            since_date=since_date,
+            parse_post_date=parse_post_date,
+            progress_callback=progress_callback,
         )
 
         if not crawl_result.posts:
             logger.warning("크롤링 결과가 없습니다.")
             return PipelineResult(errors=crawl_result.errors)
 
-        # 2) 임베딩 & 적재
+        # 3) 날짜 기준 필터 (메타데이터 활용)
+        dropped = 0
+        if since_date is not None:
+            before = len(crawl_result.posts)
+            crawl_result.posts = filter_posts_by_since(crawl_result.posts, since_date)
+            dropped = before - len(crawl_result.posts)
+            if dropped:
+                logger.info("날짜 기준 필터: %d건 제외 (기준: %s)", dropped, since_date.isoformat())
+
+        if not crawl_result.posts:
+            logger.warning("날짜 필터 후 수집할 게시글이 없습니다.")
+            result = PipelineResult(elapsed_seconds=time.time() - start)
+            result.skipped = dropped
+            return result
+
+        # 4) 임베딩 & 적재
         pipeline_result = self.embed_and_upsert(crawl_result.posts)
         pipeline_result.crawled = len(crawl_result.posts)
         pipeline_result.elapsed_seconds = time.time() - start
+        pipeline_result.skipped = dropped
+
+        # 5) 이번 크롤에서 수집한 게시물 중 가장 최근 작성일 저장
+        max_written = get_max_written_date_from_posts(crawl_result.posts)
+        if max_written:
+            save_last_crawl_date(max_written)
+            logger.info("다음 크롤링용 날짜 저장: %s", max_written.isoformat())
 
         logger.info(
-            "=== 파이프라인 완료 === 크롤링: %d → 임베딩: %d → 적재: %d (에러: %d, %.1f초)",
+            "=== 파이프라인 완료 === 크롤링: %d → 임베딩: %d → 적재: %d (스킵: %d, 에러: %d, %.1f초)",
             pipeline_result.crawled,
             pipeline_result.embedded,
             pipeline_result.upserted,
+            pipeline_result.skipped,
             pipeline_result.errors,
             pipeline_result.elapsed_seconds,
         )
