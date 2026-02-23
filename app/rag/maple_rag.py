@@ -182,6 +182,7 @@ class MapleRAG:
 2. 특정 직업군에 대한 질문 → 해당 직업군을 "필터링할직업군"에 기입
 3. 여러 직업을 비교하거나 추천 질문, 일반 정보 질문 → 둘 다 "없음"
 4. 약어/별칭 주의: 윈브=윈드브레이커, 듀블=듀얼블레이드, 데슬=데몬슬레이어, 썬콜=아크(썬콜) 등
+5. 특정 직업 이름이 들어가지만 해당 직업에 대한 질문이 아닌경우 "없음"으로 처리
 
 <응답 형식 — 반드시 아래 두 줄만 출력>
 필터링할직업: [DB 목록에 있는 정확한 직업명 또는 "없음"]
@@ -269,20 +270,22 @@ class MapleRAG:
         return context
 
     def _build_answer_messages(
-        self, query: str, context: str
+        self, query: str, context: str, main_character_name: str | None = None
     ) -> list[dict[str, str]]:
         """답변 생성용 메시지 목록 구성."""
+        user_content = (
+            f"다음은 메이플스토리 인벤 게시판에서 검색한 관련 정보입니다:\n"
+            f"{context}\n\n"
+            f"질문: {query}\n\n"
+        )
+        if main_character_name:
+            user_content = (
+                f"[사용자 본캐: {main_character_name}]\n\n" + user_content
+            )
+        user_content += "위 정보를 바탕으로 질문에 답변해주세요."
         return [
             {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"다음은 메이플스토리 인벤 게시판에서 검색한 관련 정보입니다:\n"
-                    f"{context}\n\n"
-                    f"질문: {query}\n\n"
-                    f"위 정보를 바탕으로 질문에 답변해주세요."
-                ),
-            },
+            {"role": "user", "content": user_content},
         ]
 
     @staticmethod
@@ -307,9 +310,10 @@ class MapleRAG:
         query: str,
         top_k: int = 3,
         use_cot: bool = True,
+        main_character_name: str | None = None,
     ) -> dict[str, Any]:
         """CoT 기반 RAG 답변 생성 (동기)."""
-        logger.info("질문: %s", query)
+        logger.info("질문: %s (본캐=%s)", query, main_character_name or "-")
 
         # 1) CoT 질문 분석
         filter_job = None
@@ -327,7 +331,7 @@ class MapleRAG:
 
         # 3) 답변 생성
         context = self._build_context(results)
-        messages = self._build_answer_messages(query, context)
+        messages = self._build_answer_messages(query, context, main_character_name)
         logger.info("답변 생성 중...")
         answer = self.ai.chat_completion(messages=messages, temperature=0.1)
 
@@ -340,9 +344,10 @@ class MapleRAG:
         query: str,
         top_k: int = 3,
         use_cot: bool = True,
+        main_character_name: str | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         """스트리밍 RAG 답변 생성 (제너레이터)."""
-        logger.info("질문 (스트리밍): %s", query)
+        logger.info("질문 (스트리밍): %s (본캐=%s)", query, main_character_name or "-")
 
         # 1) CoT 질문 분석
         filter_job = None
@@ -362,7 +367,7 @@ class MapleRAG:
 
         # 3) 스트리밍 답변
         context = self._build_context(results)
-        messages = self._build_answer_messages(query, context)
+        messages = self._build_answer_messages(query, context, main_character_name)
         for chunk in self.ai.chat_completion_stream(messages=messages, temperature=0.1):
             yield {"type": "answer_chunk", "content": chunk}
 

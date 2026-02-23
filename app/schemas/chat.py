@@ -10,6 +10,9 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000, description="질문")
     top_k: int = Field(default=5, ge=1, le=10, description="검색할 참고 문서 수")
     use_cot: bool = Field(default=True, description="CoT 질문 분석 사용 여부")
+    main_character_name: str | None = Field(
+        default=None, max_length=100, description="본캐 닉네임 (에이전트용)"
+    )
 
 
 class ReferenceItem(BaseModel):

@@ -6,32 +6,52 @@ from typing import Generator
 import httpx
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# 브라우저가 직접 이동하는 URL (로그인 링크 등). Docker에서는 localhost:8000 필요
+API_PUBLIC_URL = os.getenv("API_PUBLIC_URL", API_BASE_URL)
 REQUEST_TIMEOUT = 30.0
+
+
+def _headers(token: str | None = None) -> dict:
+    """Authorization 헤더 (토큰이 있으면 Bearer 추가)."""
+    h = {"Content-Type": "application/json"}
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
 
 
 # ── 채팅 API ───────────────────────────────────────────
 
 
-def chat(query: str, top_k: int = 5, use_cot: bool = True) -> dict:
-    """동기 채팅 API 호출."""
+def chat(
+    query: str,
+    top_k: int = 5,
+    use_cot: bool = True,
+    token: str | None = None,
+) -> dict:
+    """동기 채팅 API 호출. token이 있으면 본캐 정보가 에이전트에 전달됨."""
     with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
         response = client.post(
             f"{API_BASE_URL}/chat",
             json={"query": query, "top_k": top_k, "use_cot": use_cot},
+            headers=_headers(token),
         )
         response.raise_for_status()
         return response.json()
 
 
 def chat_stream(
-    query: str, top_k: int = 5, use_cot: bool = True
+    query: str,
+    top_k: int = 5,
+    use_cot: bool = True,
+    token: str | None = None,
 ) -> Generator[dict, None, None]:
-    """SSE 스트리밍 채팅 API 호출."""
+    """SSE 스트리밍 채팅 API 호출. token이 있으면 본캐 정보가 에이전트에 전달됨."""
     with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
         with client.stream(
             "POST",
             f"{API_BASE_URL}/chat/stream",
             json={"query": query, "top_k": top_k, "use_cot": use_cot},
+            headers=_headers(token),
         ) as response:
             response.raise_for_status()
             buffer = ""
@@ -107,6 +127,43 @@ def delete_session(session_id: str):
             resp.raise_for_status()
     except Exception:
         pass
+
+
+# ── 인증 API ──────────────────────────────────────────
+
+
+def auth_google_login_url() -> str:
+    """구글 로그인 URL (브라우저가 이동 → API_PUBLIC_URL 사용)."""
+    return f"{API_PUBLIC_URL}/auth/google"
+
+
+def get_me(token: str) -> dict | None:
+    """현재 로그인 사용자 조회."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(
+                f"{API_BASE_URL}/users/me",
+                headers=_headers(token),
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+def update_main_character(token: str, main_character_name: str) -> dict | None:
+    """본캐 닉네임 등록/수정."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.patch(
+                f"{API_BASE_URL}/users/me/main-character",
+                json={"main_character_name": main_character_name},
+                headers=_headers(token),
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
 
 
 # ── 헬스체크 ──────────────────────────────────────────

@@ -2,14 +2,17 @@
 import streamlit as st
 
 from api_client import (
+    auth_google_login_url,
     chat,
     chat_stream,
     create_session,
     delete_session,
+    get_me,
     get_session,
     health_check,
     list_sessions,
     save_message,
+    update_main_character,
 )
 
 # ── 페이지 설정 ────────────────────────────────────────
@@ -248,10 +251,60 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "current_session_id" not in st.session_state:
     st.session_state.current_session_id = None
+if "auth_token" not in st.session_state:
+    st.session_state.auth_token = None
+if "user_info" not in st.session_state:
+    st.session_state.user_info = None
+
+# ── URL 쿼리에서 토큰/에러 처리 ────────────────────────
+
+params = st.query_params
+if "token" in params:
+    st.session_state.auth_token = params["token"]
+    st.query_params.clear()
+    st.rerun()
+if "auth_error" in params:
+    err = params.get("auth_error", "unknown")
+    st.error(f"로그인 실패: {err}")
+    st.query_params.clear()
+
+# ── 로그인 시 사용자 정보 로드 ──────────────────────────
+
+if st.session_state.auth_token and not st.session_state.user_info:
+    user = get_me(st.session_state.auth_token)
+    if user:
+        st.session_state.user_info = user
+    else:
+        st.session_state.auth_token = None  # 토큰 무효
 
 # ── 사이드바 ──────────────────────────────────────────
 
 with st.sidebar:
+    # ── 로그인/회원 영역 ─────────────────────────────
+    st.markdown("---")
+    if st.session_state.auth_token and st.session_state.user_info:
+        user = st.session_state.user_info
+        st.markdown(f"**{user.get('email', '')}**")
+        if user.get("main_character_name"):
+            st.caption(f"본캐: {user['main_character_name']}")
+        else:
+            with st.form("main_character_form"):
+                mc = st.text_input("본캐 닉네임", placeholder="캐릭터명 입력")
+                if st.form_submit_button("저장"):
+                    if mc and mc.strip():
+                        r = update_main_character(st.session_state.auth_token, mc.strip())
+                        if r:
+                            st.session_state.user_info = get_me(st.session_state.auth_token)
+                            st.success("저장됨")
+                            st.rerun()
+        if st.button("로그아웃"):
+            st.session_state.auth_token = None
+            st.session_state.user_info = None
+            st.rerun()
+    else:
+        login_url = auth_google_login_url()
+        st.markdown(f"[🔐 Google 로그인]({login_url})")
+    st.markdown("---")
     # ── 새 채팅 버튼 (Gemini 스타일: 둥근 아웃라인) ──
     with st.container():
         st.markdown('<div class="new-chat-btn">', unsafe_allow_html=True)
@@ -377,7 +430,12 @@ if prompt := st.chat_input("메이플스토리에 대해 궁금한 것을 물어
                 references = []
 
                 with st.spinner("검색 중..."):
-                    for event in chat_stream(prompt, top_k=top_k, use_cot=use_cot):
+                    for event in chat_stream(
+                        prompt,
+                        top_k=top_k,
+                        use_cot=use_cot,
+                        token=st.session_state.get("auth_token"),
+                    ):
                         if event["type"] == "answer_chunk":
                             full_answer += event["content"]
                             answer_placeholder.markdown(full_answer + "▌")
@@ -403,7 +461,12 @@ if prompt := st.chat_input("메이플스토리에 대해 궁금한 것을 물어
             else:
                 # 동기 응답
                 with st.spinner("답변 생성 중..."):
-                    result = chat(prompt, top_k=top_k, use_cot=use_cot)
+                    result = chat(
+                        prompt,
+                        top_k=top_k,
+                        use_cot=use_cot,
+                        token=st.session_state.get("auth_token"),
+                    )
 
                 st.markdown(result["answer"])
 

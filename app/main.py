@@ -7,11 +7,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.admin import router as admin_router
+from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.sessions import router as sessions_router
+from app.api.users import router as users_router
 from app.config import settings
 from app.crawler.scheduler import start_scheduler, stop_scheduler
 from app.database import Base, engine
+from app.models import crawl_history, user  # noqa: F401 - register tables for create_all
 from app.schemas.chat import HealthResponse
 
 logging.basicConfig(
@@ -47,7 +50,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    description="메이플스토리 RAG 챗봇 API — Qdrant + GPT-4o 기반",
+    description="메이플스토리 RAG 챗봇 API",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -63,6 +66,8 @@ app.add_middleware(
 
 app.include_router(chat_router)
 app.include_router(sessions_router)
+app.include_router(auth_router)
+app.include_router(users_router)
 app.include_router(admin_router)
 
 

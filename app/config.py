@@ -30,6 +30,24 @@ class Settings(BaseSettings):
     rag_top_k: int = 5
     rag_max_tokens: int = 1024
 
+    # Google OAuth
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_auth_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
+    google_token_url: str = "https://oauth2.googleapis.com/token"
+    google_userinfo_url: str = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+    # JWT (로그인 세션)
+    jwt_secret: str = ""
+    jwt_algorithm: str = ""
+    jwt_expire_hours: int = 168  # 7일
+
+    # 프론트엔드 URL (로그인 후 리다이렉트)
+    frontend_url: str = "http://localhost:8501"
+
+    # OAuth 콜백 URL (API 서버 주소. Google Cloud에 등록한 Redirect URI와 일치해야 함)
+    auth_redirect_base: str = "http://localhost:8000"
+
     @property
     def postgres_url(self) -> str:
         """동기 PostgreSQL URL."""

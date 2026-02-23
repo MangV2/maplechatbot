@@ -5,19 +5,21 @@ from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import desc
 
 from app.crawler.pipeline import CrawlPipeline, PipelineResult
+from app.database import SessionLocal
+from app.models.crawl_history import CrawlHistory
 
 logger = logging.getLogger(__name__)
 
-CRAWL_HISTORY_MAX = 50
+CRAWL_HISTORY_LIMIT = 100
 CRAWL_LOG_MAX = 500
 
 _scheduler: BackgroundScheduler | None = None
 _last_result: PipelineResult | None = None
 _last_run_at: datetime | None = None
 _is_running: bool = False
-_crawl_history: deque = deque(maxlen=CRAWL_HISTORY_MAX)
 # 진행 중일 때만 의미 있음: 완료된 직업/게시판 수, 전체 수
 _crawl_progress: dict = {"jobs_done": 0, "jobs_total": 0}
 _crawl_log_buffer: deque = deque(maxlen=CRAWL_LOG_MAX)
@@ -68,21 +70,54 @@ def set_crawl_progress(jobs_done: int, jobs_total: int):
 
 
 def _push_crawl_history(triggered_by: str, run_at: datetime, result: PipelineResult):
-    """크롤링 이력에 한 건 추가."""
-    _crawl_history.append({
-        "run_at": run_at.isoformat(),
-        "triggered_by": triggered_by,
-        "crawled": result.crawled,
-        "upserted": result.upserted,
-        "skipped": result.skipped,
-        "errors": result.errors,
-        "elapsed_seconds": round(result.elapsed_seconds, 1),
-    })
+    """크롤링 이력을 DB에 저장."""
+    db = SessionLocal()
+    try:
+        entry = CrawlHistory(
+            run_at=run_at,
+            triggered_by=triggered_by,
+            crawled=result.crawled,
+            upserted=result.upserted,
+            skipped=result.skipped,
+            errors=result.errors,
+            elapsed_seconds=round(result.elapsed_seconds, 1),
+        )
+        db.add(entry)
+        db.commit()
+    except Exception as e:
+        logger.warning("크롤링 이력 저장 실패: %s", e)
+        db.rollback()
+    finally:
+        db.close()
 
 
-def get_crawl_history() -> list[dict]:
-    """최근 크롤링 이력 (최신순)."""
-    return list(reversed(_crawl_history))
+def get_crawl_history(limit: int = CRAWL_HISTORY_LIMIT) -> list[dict]:
+    """최근 크롤링 이력 (최신순, DB 조회)."""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(CrawlHistory)
+            .order_by(desc(CrawlHistory.run_at))
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "run_at": r.run_at.isoformat(),
+                "triggered_by": r.triggered_by,
+                "crawled": r.crawled,
+                "upserted": r.upserted,
+                "skipped": r.skipped,
+                "errors": r.errors,
+                "elapsed_seconds": r.elapsed_seconds,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.warning("크롤링 이력 조회 실패: %s", e)
+        return []
+    finally:
+        db.close()
 
 
 def _run_weekly_crawl():
