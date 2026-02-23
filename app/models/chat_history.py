@@ -19,6 +19,12 @@ class ChatSession(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(200), default="새 대화")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -32,6 +38,7 @@ class ChatSession(Base):
         cascade="all, delete-orphan",
         order_by="ChatMessage.created_at",
     )
+    user: Mapped["User | None"] = relationship("User", back_populates="sessions")
 
 
 class ChatMessage(Base):

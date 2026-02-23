@@ -6,13 +6,15 @@ from api_client import (
     admin_crawl_history,
     admin_crawl_status,
     admin_crawl_trigger,
+    admin_delete_session,
+    admin_get_session,
     admin_health,
+    admin_list_sessions,
+    admin_list_users,
     admin_qdrant_documents,
     admin_qdrant_stats,
     admin_suggested_since_date,
-    delete_session,
-    get_session,
-    list_sessions,
+    admin_user_count,
 )
 
 st.set_page_config(
@@ -51,6 +53,11 @@ with tab1:
             st.metric("API 상태", status)
             st.metric("Qdrant", qdrant)
             st.metric("문서 수", count)
+            try:
+                user_count = admin_user_count()
+                st.metric("가입 회원 수", user_count)
+            except Exception:
+                pass
         except Exception as e:
             st.error(f"헬스 조회 실패: {e}")
     with col2:
@@ -187,25 +194,44 @@ with tab2:
 # ── 채팅 사용자(세션) ─────────────────────────────────
 with tab3:
     st.header("세션 목록 (채팅 사용자)")
+    users = admin_list_users()
+    user_options = [("전체", None), ("익명만", "__anonymous__")]
+    user_options += [
+        (f"{u['email']} ({u.get('main_character_name') or '-'})", u["id"])
+        for u in users
+    ]
+    selected_idx = st.selectbox(
+        "사용자별 필터",
+        range(len(user_options)),
+        format_func=lambda i: user_options[i][0],
+        key="sess_user_filter",
+    )
+    selected_user_id = user_options[selected_idx][1]
+
     page_size = 50
     offset = st.number_input("오프셋 (0부터)", min_value=0, value=0, key="sess_offset")
-    if st.button("새로고침"):
+    if st.button("새로고침", key="sess_refresh"):
         st.rerun()
     try:
-        sessions = list_sessions(limit=page_size, offset=offset)
+        sessions = admin_list_sessions(
+            limit=page_size, offset=offset, user_id=selected_user_id
+        )
+        user_map = {u["id"]: u["email"] for u in users}
         if not sessions:
             st.info("세션이 없습니다.")
         else:
             for s in sessions:
-                with st.expander("[%s] %s — %d 메시지" % (s.get("id", "")[:8], s.get("title", ""), s.get("message_count", 0))):
-                    st.write("생성:", s.get("created_at"), "| 수정:", s.get("updated_at"))
+                uid = s.get("user_id")
+                user_label = user_map.get(uid, uid[:8] + "…") if uid else "익명"
+                with st.expander("[%s] %s — %d 메시지 | %s" % (s.get("id", "")[:8], s.get("title", ""), s.get("message_count", 0), user_label)):
+                    st.write("생성:", s.get("created_at"), "| 수정:", s.get("updated_at"), "| 사용자:", user_label)
                     if st.button("상세 보기", key="detail_" + s.get("id", "")):
-                        detail = get_session(s.get("id", ""))
+                        detail = admin_get_session(s.get("id", ""))
                         if detail:
                             for m in detail.get("messages", []):
                                 st.markdown("**%s:** %s" % (m.get("role", ""), (m.get("content", ""))[:200]))
                     if st.button("삭제", key="del_" + s.get("id", "")):
-                        delete_session(s.get("id", ""))
+                        admin_delete_session(s.get("id", ""))
                         st.success("삭제됨")
                         st.rerun()
     except Exception as e:

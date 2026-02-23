@@ -222,14 +222,16 @@ def _render_references(references: list[dict]):
 def _ensure_session():
     """현재 세션이 없으면 생성."""
     if not st.session_state.get("current_session_id"):
-        resp = create_session()
+        token = st.session_state.get("auth_token")
+        resp = create_session(token=token)
         st.session_state.current_session_id = resp["id"]
         st.session_state.messages = []
 
 
 def _load_session(session_id: str):
     """서버에서 세션 데이터를 불러와 세션 상태에 설정."""
-    data = get_session(session_id)
+    token = st.session_state.get("auth_token")
+    data = get_session(session_id, token=token)
     if data:
         st.session_state.current_session_id = data["id"]
         st.session_state.messages = data.get("messages", [])
@@ -240,7 +242,8 @@ def _load_session(session_id: str):
 
 def _start_new_chat():
     """새 대화 시작."""
-    resp = create_session()
+    token = st.session_state.get("auth_token")
+    resp = create_session(token=token)
     st.session_state.current_session_id = resp["id"]
     st.session_state.messages = []
 
@@ -316,7 +319,8 @@ with st.sidebar:
     st.markdown("")  # 여백
 
     # ── 이전 대화 목록 ──
-    sessions = list_sessions()
+    token = st.session_state.get("auth_token")
+    sessions = list_sessions(token=token)
 
     if sessions:
         st.markdown('<div class="sidebar-label">이전 대화</div>', unsafe_allow_html=True)
@@ -346,7 +350,7 @@ with st.sidebar:
             with col_menu:
                 st.markdown('<div class="del-btn">', unsafe_allow_html=True)
                 if st.button("⋮", key=f"menu_{session_id}", help="삭제"):
-                    delete_session(session_id)
+                    delete_session(session_id, token=token)
                     if session_id == st.session_state.get("current_session_id"):
                         st.session_state.current_session_id = None
                         st.session_state.messages = []
@@ -415,7 +419,12 @@ if prompt := st.chat_input("메이플스토리에 대해 궁금한 것을 물어
 
     # 사용자 메시지 추가
     st.session_state.messages.append({"role": "user", "content": prompt})
-    save_message(session_id, "user", prompt)
+    save_message(
+        session_id,
+        "user",
+        prompt,
+        token=st.session_state.get("auth_token"),
+    )
 
     with st.chat_message("user", avatar="🧑"):
         st.markdown(prompt)
@@ -456,7 +465,13 @@ if prompt := st.chat_input("메이플스토리에 대해 궁금한 것을 물어
                     "content": full_answer,
                     "references": references,
                 })
-                save_message(session_id, "assistant", full_answer, references or None)
+                save_message(
+                    session_id,
+                    "assistant",
+                    full_answer,
+                    references or None,
+                    token=st.session_state.get("auth_token"),
+                )
 
             else:
                 # 동기 응답
@@ -480,7 +495,13 @@ if prompt := st.chat_input("메이플스토리에 대해 궁금한 것을 물어
                     "content": result["answer"],
                     "references": references,
                 })
-                save_message(session_id, "assistant", result["answer"], references or None)
+                save_message(
+                    session_id,
+                    "assistant",
+                    result["answer"],
+                    references or None,
+                    token=st.session_state.get("auth_token"),
+                )
 
         except Exception as e:
             error_msg = f"⚠️ 오류가 발생했습니다: {str(e)}"

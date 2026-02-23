@@ -1,10 +1,12 @@
 """회원 모델."""
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.database import Base
@@ -30,4 +32,9 @@ class User(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    sessions: Mapped[list["ChatSession"]] = relationship(
+        "ChatSession",
+        back_populates="user",
     )

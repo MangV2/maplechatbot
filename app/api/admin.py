@@ -3,7 +3,10 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.database import get_db
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -16,6 +19,8 @@ from app.crawler.scheduler import (
     _is_running,
     _push_crawl_history,
 )
+from app.models.chat_history import ChatSession
+from app.models.user import User
 from app.rag.qdrant_store import QdrantStore
 from app.schemas.chat import HealthResponse
 
@@ -291,6 +296,98 @@ async def trigger_crawl(request: CrawlTriggerRequest):
 async def crawl_history():
     """최근 크롤링 이력 (최신순)."""
     return CrawlHistoryResponse(history=get_crawl_history())
+
+
+@router.get("/users/count")
+def admin_user_count(db: Session = Depends(get_db)):
+    """관리자용: 가입 회원 수."""
+    return {"count": db.query(User).count()}
+
+
+@router.get("/users")
+def admin_list_users(db: Session = Depends(get_db)):
+    """관리자용: 회원 목록 (id, email, 본캐)."""
+    users = db.query(User).order_by(User.created_at.desc()).all()
+    return [
+        {
+            "id": str(u.id),
+            "email": u.email,
+            "main_character_name": u.main_character_name,
+        }
+        for u in users
+    ]
+
+
+@router.get("/sessions")
+def admin_list_sessions(
+    db: Session = Depends(get_db),
+    user_id: str | None = Query(None, description="user_id 필터. __anonymous__면 익명만"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """관리자용: 세션 목록 (최신순). user_id로 사용자별 필터 가능."""
+    q = db.query(ChatSession).order_by(ChatSession.updated_at.desc())
+    if user_id is not None:
+        if user_id == "__anonymous__":
+            q = q.filter(ChatSession.user_id.is_(None))
+        else:
+            import uuid as _uuid
+            try:
+                uid = _uuid.UUID(user_id)
+                q = q.filter(ChatSession.user_id == uid)
+            except ValueError:
+                pass  # 잘못된 UUID면 필터 없이 진행
+    sessions = q.offset(offset).limit(limit).all()
+    result = []
+    for s in sessions:
+        result.append({
+            "id": str(s.id),
+            "title": s.title,
+            "user_id": str(s.user_id) if s.user_id else None,
+            "created_at": s.created_at.isoformat(),
+            "updated_at": s.updated_at.isoformat(),
+            "message_count": len(s.messages),
+        })
+    return result
+
+
+@router.get("/sessions/{session_id}")
+def admin_get_session(session_id: str, db: Session = Depends(get_db)):
+    """관리자용: 세션 상세 (메시지 포함) 조회."""
+    import uuid as _uuid
+    try:
+        sid = _uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="잘못된 세션 ID")
+    session = db.query(ChatSession).filter(ChatSession.id == sid).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+    messages = [
+        {"role": m.role, "content": m.content, "references": m.references}
+        for m in session.messages
+    ]
+    return {
+        "id": str(session.id),
+        "title": session.title,
+        "user_id": str(session.user_id) if session.user_id else None,
+        "messages": messages,
+    }
+
+
+@router.delete("/sessions/{session_id}")
+def admin_delete_session(session_id: str, db: Session = Depends(get_db)):
+    """관리자용: 세션 삭제."""
+    import uuid as _uuid
+    try:
+        sid = _uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="잘못된 세션 ID")
+    session = db.query(ChatSession).filter(ChatSession.id == sid).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+    db.delete(session)
+    db.commit()
+    return {"status": "ok"}
 
 
 @router.get("/health", response_model=HealthResponse)

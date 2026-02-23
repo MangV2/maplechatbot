@@ -1,13 +1,16 @@
 """채팅 세션 API 엔드포인트."""
 import logging
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import get_current_user_optional
 from app.database import get_db
 from app.models.chat_history import ChatMessage, ChatSession
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -69,20 +72,27 @@ class UpdateTitleRequest(BaseModel):
 # ── 엔드포인트 ─────────────────────────────────────────
 
 
+def _can_access_session(session: ChatSession, user: User | None) -> bool:
+    """세션 접근 권한: user_id가 없으면 누구나, 있으면 본인만."""
+    if session.user_id is None:
+        return True
+    return user is not None and str(session.user_id) == str(user.id)
+
+
 @router.get("", response_model=list[SessionOut])
 def list_sessions(
-    db: Session = Depends(get_db),
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User | None, Depends(get_current_user_optional)],
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """전체 세션 목록 (최신순). limit/offset으로 페이징."""
-    sessions = (
-        db.query(ChatSession)
-        .order_by(ChatSession.updated_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
-    )
+    """세션 목록 (최신순). 로그인 시 본인 세션만, 비로그인 시 익명(user_id IS NULL) 세션만."""
+    q = db.query(ChatSession).order_by(ChatSession.updated_at.desc())
+    if user is not None:
+        q = q.filter(ChatSession.user_id == user.id)
+    else:
+        q = q.filter(ChatSession.user_id.is_(None))
+    sessions = q.offset(offset).limit(limit).all()
     result = []
     for s in sessions:
         result.append(
@@ -98,9 +108,12 @@ def list_sessions(
 
 
 @router.post("", response_model=CreateSessionResponse)
-def create_session(db: Session = Depends(get_db)):
-    """새 채팅 세션 생성."""
-    session = ChatSession()
+def create_session(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User | None, Depends(get_current_user_optional)],
+):
+    """새 채팅 세션 생성. 로그인 시 user_id 설정."""
+    session = ChatSession(user_id=user.id if user else None)
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -108,7 +121,11 @@ def create_session(db: Session = Depends(get_db)):
 
 
 @router.get("/{session_id}", response_model=SessionDetail)
-def get_session(session_id: str, db: Session = Depends(get_db)):
+def get_session(
+    session_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User | None, Depends(get_current_user_optional)],
+):
     """세션의 전체 대화 내역 조회."""
     try:
         sid = uuid.UUID(session_id)
@@ -118,6 +135,8 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
     session = db.query(ChatSession).filter(ChatSession.id == sid).first()
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+    if not _can_access_session(session, user):
+        raise HTTPException(status_code=403, detail="이 세션에 접근할 수 없습니다")
 
     messages = []
     for m in session.messages:
@@ -136,7 +155,10 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{session_id}/messages")
 def save_message(
-    session_id: str, req: SaveMessageRequest, db: Session = Depends(get_db)
+    session_id: str,
+    req: SaveMessageRequest,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User | None, Depends(get_current_user_optional)],
 ):
     """세션에 메시지 저장."""
     try:
@@ -147,6 +169,8 @@ def save_message(
     session = db.query(ChatSession).filter(ChatSession.id == sid).first()
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+    if not _can_access_session(session, user):
+        raise HTTPException(status_code=403, detail="이 세션에 접근할 수 없습니다")
 
     msg = ChatMessage(
         session_id=sid,
@@ -166,7 +190,10 @@ def save_message(
 
 @router.patch("/{session_id}/title")
 def update_title(
-    session_id: str, req: UpdateTitleRequest, db: Session = Depends(get_db)
+    session_id: str,
+    req: UpdateTitleRequest,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User | None, Depends(get_current_user_optional)],
 ):
     """세션 제목 변경."""
     try:
@@ -177,6 +204,8 @@ def update_title(
     session = db.query(ChatSession).filter(ChatSession.id == sid).first()
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+    if not _can_access_session(session, user):
+        raise HTTPException(status_code=403, detail="이 세션에 접근할 수 없습니다")
 
     session.title = req.title
     db.commit()
@@ -184,7 +213,11 @@ def update_title(
 
 
 @router.delete("/{session_id}")
-def delete_session(session_id: str, db: Session = Depends(get_db)):
+def delete_session(
+    session_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User | None, Depends(get_current_user_optional)],
+):
     """세션 삭제."""
     try:
         sid = uuid.UUID(session_id)
@@ -194,6 +227,8 @@ def delete_session(session_id: str, db: Session = Depends(get_db)):
     session = db.query(ChatSession).filter(ChatSession.id == sid).first()
     if not session:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+    if not _can_access_session(session, user):
+        raise HTTPException(status_code=403, detail="이 세션에 접근할 수 없습니다")
 
     db.delete(session)
     db.commit()

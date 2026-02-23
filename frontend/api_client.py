@@ -73,13 +73,16 @@ def chat_stream(
 # ── 세션 API ──────────────────────────────────────────
 
 
-def list_sessions(limit: int = 100, offset: int = 0) -> list[dict]:
-    """세션 목록 조회 (페이징)."""
+def list_sessions(
+    limit: int = 100, offset: int = 0, token: str | None = None
+) -> list[dict]:
+    """세션 목록 조회 (페이징). token 있으면 본인 세션만, 없으면 익명 세션만."""
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.get(
                 f"{API_BASE_URL}/sessions",
                 params={"limit": limit, "offset": offset},
+                headers=_headers(token),
             )
             resp.raise_for_status()
             return resp.json()
@@ -87,43 +90,59 @@ def list_sessions(limit: int = 100, offset: int = 0) -> list[dict]:
         return []
 
 
-def create_session() -> dict:
-    """새 세션 생성."""
+def create_session(token: str | None = None) -> dict:
+    """새 세션 생성. token 있으면 user_id 연결."""
     with httpx.Client(timeout=5.0) as client:
-        resp = client.post(f"{API_BASE_URL}/sessions")
+        resp = client.post(
+            f"{API_BASE_URL}/sessions",
+            headers=_headers(token),
+        )
         resp.raise_for_status()
         return resp.json()
 
 
-def get_session(session_id: str) -> dict | None:
+def get_session(session_id: str, token: str | None = None) -> dict | None:
     """세션 상세 (메시지 포함) 조회."""
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{API_BASE_URL}/sessions/{session_id}")
+            resp = client.get(
+                f"{API_BASE_URL}/sessions/{session_id}",
+                headers=_headers(token),
+            )
             resp.raise_for_status()
             return resp.json()
     except Exception:
         return None
 
 
-def save_message(session_id: str, role: str, content: str, references: list | None = None):
+def save_message(
+    session_id: str,
+    role: str,
+    content: str,
+    references: list | None = None,
+    token: str | None = None,
+):
     """세션에 메시지 저장."""
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.post(
                 f"{API_BASE_URL}/sessions/{session_id}/messages",
                 json={"role": role, "content": content, "references": references},
+                headers=_headers(token),
             )
             resp.raise_for_status()
     except Exception:
         pass  # 저장 실패해도 UI는 계속 동작
 
 
-def delete_session(session_id: str):
+def delete_session(session_id: str, token: str | None = None):
     """세션 삭제."""
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.delete(f"{API_BASE_URL}/sessions/{session_id}")
+            resp = client.delete(
+                f"{API_BASE_URL}/sessions/{session_id}",
+                headers=_headers(token),
+            )
             resp.raise_for_status()
     except Exception:
         pass
@@ -181,6 +200,65 @@ def health_check() -> dict:
 
 
 # ── Admin API ──────────────────────────────────────────
+
+
+def admin_user_count() -> int:
+    """관리자용: 가입 회원 수."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{API_BASE_URL}/admin/users/count")
+            resp.raise_for_status()
+            return resp.json().get("count", 0)
+    except Exception:
+        return 0
+
+
+def admin_list_users() -> list[dict]:
+    """관리자용: 회원 목록 (id, email, 본캐)."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{API_BASE_URL}/admin/users")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return []
+
+
+def admin_list_sessions(
+    limit: int = 100, offset: int = 0, user_id: str | None = None
+) -> list[dict]:
+    """관리자용: 세션 목록. user_id로 필터 가능 (__anonymous__=익명만)."""
+    try:
+        params: dict = {"limit": limit, "offset": offset}
+        if user_id is not None:
+            params["user_id"] = user_id
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{API_BASE_URL}/admin/sessions", params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return []
+
+
+def admin_get_session(session_id: str) -> dict | None:
+    """관리자용: 세션 상세 (메시지 포함) 조회."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(f"{API_BASE_URL}/admin/sessions/{session_id}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+def admin_delete_session(session_id: str):
+    """관리자용: 세션 삭제."""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.delete(f"{API_BASE_URL}/admin/sessions/{session_id}")
+            resp.raise_for_status()
+    except Exception:
+        pass
 
 
 def admin_crawl_status() -> dict:
