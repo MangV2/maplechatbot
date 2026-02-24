@@ -96,6 +96,12 @@ class QdrantDocumentsResponse(BaseModel):
     next_offset: int | str | None = None
 
 
+class QdrantFilterOptionsResponse(BaseModel):
+    """Qdrant 문서 조회 필터 옵션: 직업게시판/단일게시판별 세부 게시판 목록."""
+    job_boards: list[str]  # 키네시스, 듀얼블레이드, 아크 등
+    flat_boards: list[str]  # 실시간소식, 팁과노하우, 질문과답변
+
+
 class SuggestedSinceDateResponse(BaseModel):
     """수집 시작일 자동 제안 (마지막 크롤 날짜 → Qdrant 최신 문서 날짜)."""
     since_date: str | None = None  # YYYY-MM-DD, 없으면 null
@@ -392,6 +398,24 @@ def admin_health():
         return HealthResponse(
             status="degraded", qdrant_status=str(e), document_count=0
         )
+
+
+@router.get("/qdrant/filter-options", response_model=QdrantFilterOptionsResponse)
+def qdrant_filter_options():
+    """Qdrant 문서 조회용 필터 옵션: 직업게시판 목록, 단일게시판 목록."""
+    from app.crawler.inven_crawler import FLAT_BOARDS
+
+    try:
+        store = QdrantStore()
+        stats = store.get_job_stats()
+        flat_labels = list(FLAT_BOARDS.values())
+        job_boards = [j for j in stats.get("jobs", {}).keys() if j not in flat_labels]
+        return QdrantFilterOptionsResponse(
+            job_boards=sorted(job_boards),
+            flat_boards=flat_labels,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"필터 옵션 조회 실패: {e}")
 
 
 @router.get("/qdrant/stats", response_model=QdrantStatsResponse)

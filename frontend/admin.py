@@ -12,6 +12,7 @@ from api_client import (
     admin_list_sessions,
     admin_list_users,
     admin_qdrant_documents,
+    admin_qdrant_filter_options,
     admin_qdrant_stats,
     admin_suggested_since_date,
     admin_user_count,
@@ -243,23 +244,59 @@ with tab3:
 # ── Qdrant 저장 내용 조회 ─────────────────────────────
 with tab4:
     st.header("Qdrant 저장 문서 조회")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        job_filter = st.text_input("직업 필터 (비우면 전체)", key="job_f")
-    with col2:
-        group_filter = st.text_input("직업군 필터 (비우면 전체)", key="group_f")
-    with col3:
-        doc_limit = st.number_input("건수", min_value=1, max_value=100, value=20)
+    try:
+        filter_opts = admin_qdrant_filter_options()
+        job_board_options = filter_opts.get("job_boards", [])
+        flat_board_options = filter_opts.get("flat_boards", [])
+    except Exception:
+        job_board_options = []
+        flat_board_options = []
+
+    board_type = st.selectbox(
+        "게시판 유형",
+        options=["전체", "직업게시판", "단일게시판"],
+        index=0,
+        key="qdrant_board_type",
+    )
+
+    sub_board_options = []
+    job_filter_val = None
+    group_filter_val = None
+
+    if board_type == "직업게시판" and job_board_options:
+        sub_board_options = [""] + job_board_options
+        sel = st.selectbox(
+            "세부 게시판 (직업)",
+            options=sub_board_options,
+            format_func=lambda x: "(전체)" if x == "" else x,
+            key="qdrant_job_board_sel",
+        )
+        if sel:
+            job_filter_val = sel
+    elif board_type == "단일게시판" and flat_board_options:
+        sub_board_options = [""] + flat_board_options
+        sel = st.selectbox(
+            "세부 게시판",
+            options=sub_board_options,
+            format_func=lambda x: "(전체)" if x == "" else x,
+            key="qdrant_flat_board_sel",
+        )
+        group_filter_val = "정보공유"
+        if sel:
+            job_filter_val = sel
+
+    doc_limit = st.number_input("건수", min_value=1, max_value=100, value=20, key="qdrant_doc_limit")
+
     if "qdrant_next_offset" not in st.session_state:
         st.session_state.qdrant_next_offset = None
-    do_query = st.button("조회")
+    do_query = st.button("조회", key="qdrant_do_query")
     if do_query:
         st.session_state.qdrant_next_offset = None
         st.rerun()
     try:
         data = admin_qdrant_documents(
-            job=job_filter or None,
-            job_group=group_filter or None,
+            job=job_filter_val,
+            job_group=group_filter_val,
             limit=doc_limit,
             offset=str(st.session_state.qdrant_next_offset) if st.session_state.qdrant_next_offset is not None else None,
         )
@@ -278,7 +315,7 @@ with tab4:
                 })
             st.dataframe(rows, width="stretch")
             if next_offset is not None:
-                if st.button("다음 페이지"):
+                if st.button("다음 페이지", key="qdrant_next_page"):
                     st.session_state.qdrant_next_offset = next_offset
                     st.rerun()
         else:

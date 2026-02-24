@@ -328,6 +328,14 @@ def admin_health() -> dict:
         return {"status": "error", "qdrant_status": str(e), "document_count": 0}
 
 
+def admin_qdrant_filter_options() -> dict:
+    """Qdrant 문서 조회 필터 옵션: 직업게시판/단일게시판별 세부 게시판 목록."""
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.get(f"{API_BASE_URL}/admin/qdrant/filter-options")
+        resp.raise_for_status()
+        return resp.json()
+
+
 def admin_qdrant_stats() -> dict:
     """Qdrant 현황 (직업/직업군별 개수)."""
     with httpx.Client(timeout=30.0) as client:
