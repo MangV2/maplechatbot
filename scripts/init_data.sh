@@ -8,7 +8,7 @@ API_URL="${API_BASE_URL:-http://localhost:8000}"
 echo "Triggering initial crawl (small batch) at $API_URL ..."
 curl -s -X POST "$API_URL/admin/crawl" \
   -H "Content-Type: application/json" \
-  -d '{"max_jobs_per_group": 2, "max_pages": 1, "max_posts_per_page": 5}' \
+  -d '{}' \
   | head -20
 
 echo ""

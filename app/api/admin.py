@@ -34,13 +34,6 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 class CrawlTriggerRequest(BaseModel):
     """수동 크롤링 트리거 요청."""
 
-    max_jobs_per_group: int | None = Field(
-        default=3, description="직업군당 최대 직업 수 (null이면 전체)"
-    )
-    max_pages: int = Field(default=1, ge=1, le=50, description="직업별 페이지 수")
-    max_posts_per_page: int = Field(
-        default=10, ge=1, le=200, description="페이지당 최대 게시글 수"
-    )
     since_date: str | None = Field(
         default=None,
         description="수집 시작일 (YYYY-MM-DD 형식). None이면 자동 결정 (저장된 날짜 → Qdrant 최신 작성일 → 전체 수집)"
@@ -199,9 +192,6 @@ async def crawl_status():
 
 
 def _run_manual_crawl_sync(
-    max_jobs_per_group: int | None,
-    max_pages: int,
-    max_posts_per_page: int,
     since_date_dt: datetime | None,
     crawl_mode: str,
 ):
@@ -211,9 +201,6 @@ def _run_manual_crawl_sync(
     try:
         pipeline = CrawlPipeline()
         result = pipeline.run_sync(
-            max_jobs_per_group=max_jobs_per_group,
-            max_pages=max_pages,
-            max_posts_per_page=max_posts_per_page,
             since_date=since_date_dt,
             crawl_mode=crawl_mode,
             progress_callback=set_crawl_progress,
@@ -245,8 +232,7 @@ async def trigger_crawl(request: CrawlTriggerRequest):
 
     crawl_mode = request.crawl_mode if request.crawl_mode in ("job_only", "flat_only", "all") else "all"
     logger.info(
-        "수동 크롤링 트리거: jobs=%s, pages=%d, posts=%d, crawl_mode=%s, since_date=%s, background=%s",
-        request.max_jobs_per_group, request.max_pages, request.max_posts_per_page,
+        "수동 크롤링 트리거: crawl_mode=%s, since_date=%s, background=%s",
         crawl_mode, request.since_date or "자동", request.background,
     )
 
@@ -255,9 +241,6 @@ async def trigger_crawl(request: CrawlTriggerRequest):
         loop.run_in_executor(
             None,
             _run_manual_crawl_sync,
-            request.max_jobs_per_group,
-            request.max_pages,
-            request.max_posts_per_page,
             since_date_dt,
             crawl_mode,
         )
@@ -278,9 +261,6 @@ async def trigger_crawl(request: CrawlTriggerRequest):
     try:
         pipeline = CrawlPipeline()
         result = await pipeline.run(
-            max_jobs_per_group=request.max_jobs_per_group,
-            max_pages=request.max_pages,
-            max_posts_per_page=request.max_posts_per_page,
             since_date=since_date_dt,
             crawl_mode=crawl_mode,
             progress_callback=set_crawl_progress,

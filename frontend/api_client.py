@@ -282,9 +282,6 @@ def admin_suggested_since_date() -> str | None:
 
 
 def admin_crawl_trigger(
-    max_jobs_per_group: int | None = 3,
-    max_pages: int = 1,
-    max_posts_per_page: int = 10,
     since_date: str | None = None,
     crawl_mode: str = "all",
     background: bool = True,
@@ -294,9 +291,6 @@ def admin_crawl_trigger(
     background=True면 백그라운드 실행 후 202 반환(진행률·로그 폴링 가능).
     """
     payload = {
-        "max_jobs_per_group": max_jobs_per_group,
-        "max_pages": max_pages,
-        "max_posts_per_page": max_posts_per_page,
         "crawl_mode": crawl_mode,
         "background": background,
     }

@@ -119,9 +119,6 @@ with tab2:
             help="직업게시판(전사/마법사/궁수/도적/해적), 단일게시판(실시간소식/팁과노하우/질문과답변)",
         )
         crawl_mode = crawl_mode_sel
-        max_jobs = st.number_input("직업군당 최대 직업 수 (0=전체)", min_value=0, max_value=50, value=0)
-        max_pages = st.number_input("직업별 페이지 수", min_value=1, max_value=50, value=10)
-        max_posts = st.number_input("페이지당 최대 게시글 수", min_value=1, max_value=200, value=100)
         if suggested:
             since_date_label = "수집 시작일 (YYYY-MM-DD) — 자동 제안됨"
             since_date_placeholder = ""
@@ -146,9 +143,6 @@ with tab2:
         else:
             try:
                 result = admin_crawl_trigger(
-                    max_jobs_per_group=None if max_jobs == 0 else max_jobs,
-                    max_pages=max_pages,
-                    max_posts_per_page=max_posts,
                     since_date=since_date.strip() if since_date.strip() else None,
                     crawl_mode=crawl_mode,
                     background=True,
