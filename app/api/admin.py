@@ -45,6 +45,10 @@ class CrawlTriggerRequest(BaseModel):
         default=None,
         description="수집 시작일 (YYYY-MM-DD 형식). None이면 자동 결정 (저장된 날짜 → Qdrant 최신 작성일 → 전체 수집)"
     )
+    crawl_mode: str = Field(
+        default="all",
+        description="크롤링 대상: job_only(직업게시판만), flat_only(단일게시판만), all(전체)"
+    )
     background: bool = Field(
         default=True,
         description="True면 백그라운드 실행 후 즉시 202 반환(진행률·로그 폴링 가능). False면 완료까지 대기."
@@ -199,6 +203,7 @@ def _run_manual_crawl_sync(
     max_pages: int,
     max_posts_per_page: int,
     since_date_dt: datetime | None,
+    crawl_mode: str,
 ):
     """백그라운드 스레드에서 실행하는 동기 크롤링."""
     set_crawl_running(True)
@@ -210,6 +215,7 @@ def _run_manual_crawl_sync(
             max_pages=max_pages,
             max_posts_per_page=max_posts_per_page,
             since_date=since_date_dt,
+            crawl_mode=crawl_mode,
             progress_callback=set_crawl_progress,
         )
         _push_crawl_history("manual", datetime.now(timezone.utc), result)
@@ -237,10 +243,11 @@ async def trigger_crawl(request: CrawlTriggerRequest):
                 detail=f"잘못된 날짜 형식: {request.since_date}. YYYY-MM-DD 형식이어야 합니다.",
             )
 
+    crawl_mode = request.crawl_mode if request.crawl_mode in ("job_only", "flat_only", "all") else "all"
     logger.info(
-        "수동 크롤링 트리거: jobs=%s, pages=%d, posts=%d, since_date=%s, background=%s",
+        "수동 크롤링 트리거: jobs=%s, pages=%d, posts=%d, crawl_mode=%s, since_date=%s, background=%s",
         request.max_jobs_per_group, request.max_pages, request.max_posts_per_page,
-        request.since_date or "자동", request.background,
+        crawl_mode, request.since_date or "자동", request.background,
     )
 
     if request.background:
@@ -252,6 +259,7 @@ async def trigger_crawl(request: CrawlTriggerRequest):
             request.max_pages,
             request.max_posts_per_page,
             since_date_dt,
+            crawl_mode,
         )
         return JSONResponse(
             status_code=202,
@@ -274,6 +282,7 @@ async def trigger_crawl(request: CrawlTriggerRequest):
             max_pages=request.max_pages,
             max_posts_per_page=request.max_posts_per_page,
             since_date=since_date_dt,
+            crawl_mode=crawl_mode,
             progress_callback=set_crawl_progress,
         )
         _push_crawl_history("manual", datetime.now(timezone.utc), result)

@@ -30,9 +30,11 @@ JOB_GROUPS: dict[str, str] = {
 # ── 단일 게시판 ID 매핑 (직업 하위 없음: 공지/이벤트/팁 등) ─
 # 2314: 실시간 소식 게시판 — 공지, 이벤트, 업데이트, 패치노트 등
 # 2304: 팁과 노하우 게시판 — 사냥/보스/아이템/전문기술 등 팁
+# 2300: 질문과 답변 게시판 — 유저 질문/답변
 FLAT_BOARDS: dict[str, str] = {
     "2314": "실시간소식",
     "2304": "팁과노하우",
+    "2300": "질문과답변",
 }
 
 DEFAULT_HEADERS = {
@@ -454,6 +456,7 @@ class InvenCrawler:
         max_pages: int = 1,
         max_posts_per_page: int = 20,
         target_groups: dict[str, str] | None = None,
+        include_job_boards: bool = True,
         include_flat_boards: bool = True,
         flat_boards: dict[str, str] | None = None,
         flat_board_pages: int = 1,
@@ -469,7 +472,8 @@ class InvenCrawler:
             max_pages: 직업별 수집할 페이지 수
             max_posts_per_page: 페이지당 수집할 최대 게시글 수
             target_groups: 크롤링할 직업군 (None이면 전체 5개)
-            include_flat_boards: True면 실시간소식(2314)·팁과노하우(2304) 추가 수집
+            include_job_boards: True면 직업 게시판(전사/마법사/궁수/도적/해적) 수집
+            include_flat_boards: True면 단일 게시판(실시간소식/팁과노하우/질문과답변 등) 수집
             flat_boards: 단일 게시판 ID→라벨 (None이면 FLAT_BOARDS 사용)
             flat_board_pages: 단일 게시판당 수집 페이지 수
             flat_board_posts_per_page: 단일 게시판 페이지당 게시글 수
@@ -487,57 +491,58 @@ class InvenCrawler:
             if progress_callback:
                 progress_callback(jobs_done, jobs_total)
 
-        logger.info("크롤링 시작 — 직업군: %d개, 단일게시판: %s", len(groups), include_flat_boards)
+        logger.info("크롤링 시작 — 직업게시판: %s, 단일게시판: %s", include_job_boards, include_flat_boards)
         report_progress()
 
         async with aiohttp.ClientSession(
             cookie_jar=aiohttp.CookieJar()
         ) as session:
             # ── 1) 직업 게시판 (전사/마법사/궁수/도적/해적) ──
-            for group_id, group_name in groups.items():
-                logger.info("[%s] 직업군 크롤링 시작", group_name)
+            if include_job_boards:
+                for group_id, group_name in groups.items():
+                    logger.info("[%s] 직업군 크롤링 시작", group_name)
 
-                jobs = await self.get_job_list(session, group_id)
-                if not jobs:
-                    logger.warning("[%s] 직업 목록 수집 실패", group_name)
-                    result.errors += 1
-                    continue
-
-                logger.info("[%s] 직업 %d개 발견: %s", group_name, len(jobs), ", ".join(jobs[:5]))
-
-                jobs_to_crawl = (
-                    jobs if max_jobs_per_group is None else jobs[:max_jobs_per_group]
-                )
-                jobs_total += len(jobs_to_crawl)
-                report_progress()
-
-                for job in jobs_to_crawl:
-                    logger.info("[%s/%s] 게시판 크롤링", group_name, job)
-                    try:
-                        posts = await self._scrape_job_board(
-                            session, group_id, group_name, job,
-                            max_pages=max_pages,
-                            max_posts_per_page=max_posts_per_page,
-                            since_date=since_date,
-                            parse_post_date=parse_post_date,
-                        )
-                        result.posts.extend(posts)
-                        result.total_jobs_crawled += 1
-                        logger.info(
-                            "[%s/%s] %d개 게시글 수집",
-                            group_name, job, len(posts),
-                        )
-                    except Exception as e:
-                        logger.error("[%s/%s] 크롤링 실패: %s", group_name, job, e)
+                    jobs = await self.get_job_list(session, group_id)
+                    if not jobs:
+                        logger.warning("[%s] 직업 목록 수집 실패", group_name)
                         result.errors += 1
+                        continue
 
-                    jobs_done += 1
+                    logger.info("[%s] 직업 %d개 발견: %s", group_name, len(jobs), ", ".join(jobs[:5]))
+
+                    jobs_to_crawl = (
+                        jobs if max_jobs_per_group is None else jobs[:max_jobs_per_group]
+                    )
+                    jobs_total += len(jobs_to_crawl)
                     report_progress()
-                    await asyncio.sleep(self.request_delay)
 
-                await asyncio.sleep(self.group_delay)
+                    for job in jobs_to_crawl:
+                        logger.info("[%s/%s] 게시판 크롤링", group_name, job)
+                        try:
+                            posts = await self._scrape_job_board(
+                                session, group_id, group_name, job,
+                                max_pages=max_pages,
+                                max_posts_per_page=max_posts_per_page,
+                                since_date=since_date,
+                                parse_post_date=parse_post_date,
+                            )
+                            result.posts.extend(posts)
+                            result.total_jobs_crawled += 1
+                            logger.info(
+                                "[%s/%s] %d개 게시글 수집",
+                                group_name, job, len(posts),
+                            )
+                        except Exception as e:
+                            logger.error("[%s/%s] 크롤링 실패: %s", group_name, job, e)
+                            result.errors += 1
 
-            # ── 2) 단일 게시판 (실시간 소식 2314, 팁과 노하우 2304) ──
+                        jobs_done += 1
+                        report_progress()
+                        await asyncio.sleep(self.request_delay)
+
+                    await asyncio.sleep(self.group_delay)
+
+            # ── 2) 단일 게시판 (실시간소식, 팁과노하우, 질문과답변 등) ──
             if include_flat_boards:
                 flat = flat_boards or FLAT_BOARDS
                 jobs_total += len(flat)

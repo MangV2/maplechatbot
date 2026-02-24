@@ -111,6 +111,14 @@ with tab2:
     if st.button("제안 날짜 다시 불러오기", key="refresh_suggested"):
         st.rerun()
     with st.form("crawl_form"):
+        crawl_mode_sel = st.selectbox(
+            "크롤링 대상",
+            options=["all", "job_only", "flat_only"],
+            format_func=lambda x: {"all": "전체", "job_only": "직업게시판만", "flat_only": "단일게시판만"}[x],
+            index=0,
+            help="직업게시판(전사/마법사/궁수/도적/해적), 단일게시판(실시간소식/팁과노하우/질문과답변)",
+        )
+        crawl_mode = crawl_mode_sel
         max_jobs = st.number_input("직업군당 최대 직업 수 (0=전체)", min_value=0, max_value=50, value=0)
         max_pages = st.number_input("직업별 페이지 수", min_value=1, max_value=50, value=10)
         max_posts = st.number_input("페이지당 최대 게시글 수", min_value=1, max_value=200, value=100)
@@ -142,6 +150,7 @@ with tab2:
                     max_pages=max_pages,
                     max_posts_per_page=max_posts,
                     since_date=since_date.strip() if since_date.strip() else None,
+                    crawl_mode=crawl_mode,
                     background=True,
                 )
                 # 202 = 백그라운드 시작 → 진행률·로그 폴링

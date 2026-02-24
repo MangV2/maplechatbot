@@ -261,6 +261,7 @@ class CrawlPipeline:
         max_pages: int = 1,
         max_posts_per_page: int = 20,
         since_date: datetime | None = None,
+        crawl_mode: str = "all",
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> PipelineResult:
         """크롤링 → (날짜 필터) → 임베딩 → Qdrant 적재.
@@ -271,6 +272,7 @@ class CrawlPipeline:
             max_posts_per_page: 페이지당 수집할 최대 게시글 수
             since_date: 이 값이 있으면 해당 날짜 이후 작성글만 수집.
                        None이면 자동 결정 (저장된 날짜 → Qdrant 최신 작성일 → 전체 수집)
+            crawl_mode: "job_only" 직업게시판만, "flat_only" 단일게시판만, "all" 전체
             progress_callback: (완료된 직업/게시판 수, 전체 수) 진행 상황 콜백
         """
         logger.info("=== 파이프라인 시작 ===")
@@ -283,11 +285,15 @@ class CrawlPipeline:
                 logger.info("자동 결정된 수집 시작일: %s", since_date.isoformat())
 
         # 2) 크롤링 (since_date 있으면 직업/게시판별로 이전 글 나오면 즉시 중단)
+        include_job = crawl_mode in ("job_only", "all")
+        include_flat = crawl_mode in ("flat_only", "all")
         crawl_result: CrawlResult = await self.crawler.crawl(
             max_jobs_per_group=max_jobs_per_group,
             max_pages=max_pages,
             max_posts_per_page=max_posts_per_page,
             since_date=since_date,
+            include_job_boards=include_job,
+            include_flat_boards=include_flat,
             parse_post_date=parse_post_date,
             progress_callback=progress_callback,
         )

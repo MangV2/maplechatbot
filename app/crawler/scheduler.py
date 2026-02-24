@@ -140,6 +140,7 @@ def _run_weekly_crawl():
             max_pages=10,              # 기간 내 수집을 위해 충분한 페이지
             max_posts_per_page=100,   # 페이지당 충분한 게시글 수
             since_date=None,           # 자동 결정 (저장된 날짜 → Qdrant 최신 작성일 → 전체 수집)
+            crawl_mode="all",          # 주간 스케줄러는 전체 수집
             progress_callback=set_crawl_progress,
         )
         _push_crawl_history("scheduled", _last_run_at, _last_result)

@@ -286,15 +286,18 @@ def admin_crawl_trigger(
     max_pages: int = 1,
     max_posts_per_page: int = 10,
     since_date: str | None = None,
+    crawl_mode: str = "all",
     background: bool = True,
 ) -> dict:
     """수동 크롤링 실행. since_date가 있으면 해당 날짜 이후 작성글만 수집.
+    crawl_mode: job_only(직업게시판만), flat_only(단일게시판만), all(전체)
     background=True면 백그라운드 실행 후 202 반환(진행률·로그 폴링 가능).
     """
     payload = {
         "max_jobs_per_group": max_jobs_per_group,
         "max_pages": max_pages,
         "max_posts_per_page": max_posts_per_page,
+        "crawl_mode": crawl_mode,
         "background": background,
     }
     if since_date:
