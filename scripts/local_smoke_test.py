@@ -149,8 +149,6 @@ def main():
     print("  1. Docker Desktop 설치")
     print("  2. docker compose up --build -d")
     print("  3. http://localhost:8501 에서 채팅 UI 접속")
-    print("  4. 기존 데이터 마이그레이션:")
-    print("     python -m scripts.migrate_faiss_to_qdrant")
 
 
 if __name__ == "__main__":

@@ -33,6 +33,10 @@ class ChatResponse(BaseModel):
     references: list[ReferenceItem] = Field(
         default_factory=list, description="참고 문서 목록"
     )
+    pending_character_sync: str | None = Field(
+        default=None,
+        description="캐릭터 동기화 확인 대기 중인 캐릭터명. 프론트에서 '동기화 진행' 시 이 이름으로 API 호출.",
+    )
 
 
 class HealthResponse(BaseModel):

@@ -38,3 +38,8 @@ class User(Base):
         "ChatSession",
         back_populates="user",
     )
+    character_snapshots: Mapped[list["CharacterSnapshot"]] = relationship(
+        "CharacterSnapshot",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

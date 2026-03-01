@@ -14,7 +14,7 @@ from app.api.users import router as users_router
 from app.config import settings
 from app.crawler.scheduler import start_scheduler, stop_scheduler
 from app.database import Base, engine
-from app.models import crawl_history, user  # noqa: F401 - register tables for create_all
+from app.models import character_snapshot, crawl_history, user  # noqa: F401 - register tables for create_all
 from app.schemas.chat import HealthResponse
 
 logging.basicConfig(

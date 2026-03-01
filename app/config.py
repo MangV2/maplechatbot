@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # OAuth 콜백 URL (API 서버 주소. Google Cloud에 등록한 Redirect URI와 일치해야 함)
     auth_redirect_base: str = "http://localhost:8000"
 
+    # Nexon Open API (메이플스토리 캐릭터 정보)
+    nexon_open_api_key: str = ""
+
     @property
     def postgres_url(self) -> str:
         """동기 PostgreSQL URL."""

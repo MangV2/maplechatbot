@@ -3,6 +3,7 @@ import streamlit as st
 
 from api_client import (
     auth_google_login_url,
+    character_sync,
     chat,
     chat_stream,
     create_session,
@@ -258,6 +259,8 @@ if "auth_token" not in st.session_state:
     st.session_state.auth_token = None
 if "user_info" not in st.session_state:
     st.session_state.user_info = None
+if "pending_character_sync" not in st.session_state:
+    st.session_state.pending_character_sync = None
 
 # ── URL 쿼리에서 토큰/에러 처리 ────────────────────────
 
@@ -290,6 +293,13 @@ with st.sidebar:
         st.markdown(f"**{user.get('email', '')}**")
         if user.get("main_character_name"):
             st.caption(f"본캐: {user['main_character_name']}")
+            if st.button("🔄 캐릭터 정보 불러오기", key="sidebar_char_sync", help="넥슨 API로 본캐 정보 갱신"):
+                r = character_sync(st.session_state.auth_token, user["main_character_name"])
+                if r and "error" not in r:
+                    st.success(f"✅ {r.get('character_name', '')} 동기화 완료")
+                elif r and "error" in r:
+                    st.error(r["error"])
+                st.rerun()
         else:
             with st.form("main_character_form"):
                 mc = st.text_input("본캐 닉네임", placeholder="캐릭터명 입력")
@@ -412,102 +422,133 @@ if not st.session_state.messages:
 
 # ── 채팅 입력 처리 ─────────────────────────────────────
 
+# 동기화 진행 확인 문구 (채팅으로 캐릭터 동기화 허락 후 실행)
+SYNC_CONFIRM_PHRASES = ("동기화 진행", "진행", "해줘", "응", "네", "예", "동의", "해줘요")
+
 if prompt := st.chat_input("메이플스토리에 대해 궁금한 것을 물어보세요!"):
-    # 세션이 없으면 자동 생성
-    _ensure_session()
-    session_id = st.session_state.current_session_id
+    prompt_stripped = prompt.strip()
+    pending_char = st.session_state.get("pending_character_sync")
+    token = st.session_state.get("auth_token")
 
-    # 사용자 메시지 추가
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    save_message(
-        session_id,
-        "user",
-        prompt,
-        token=st.session_state.get("auth_token"),
-    )
+    # 대기 중인 캐릭터 동기화가 있고, 사용자가 확인했으면 API만 호출 후 채팅에는 반영만
+    if pending_char and token and prompt_stripped in SYNC_CONFIRM_PHRASES:
+        _ensure_session()
+        session_id = st.session_state.current_session_id
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        save_message(session_id, "user", prompt, token=token)
+        r = character_sync(token, pending_char)
+        st.session_state.pending_character_sync = None
+        if r and "error" not in r:
+            reply = f"**{r.get('character_name', pending_char)}** 캐릭터 정보를 불러왔습니다. (갱신: {r.get('fetched_at', '')[:19]})"
+        else:
+            reply = f"캐릭터 정보 불러오기 실패: {r.get('error', '알 수 없음')}"
+        st.session_state.messages.append({"role": "assistant", "content": reply, "references": []})
+        save_message(session_id, "assistant", reply, references=None, token=token)
+        st.rerun()
 
-    with st.chat_message("user", avatar="🧑"):
-        st.markdown(prompt)
+    # 일반 채팅
+    else:
+        # 세션이 없으면 자동 생성
+        _ensure_session()
+        session_id = st.session_state.current_session_id
 
-    # AI 응답
-    with st.chat_message("assistant", avatar="🍁"):
-        try:
-            if use_streaming:
-                # 스트리밍 응답
-                answer_placeholder = st.empty()
-                full_answer = ""
-                references = []
+        # 사용자 메시지 추가
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        save_message(
+            session_id,
+            "user",
+            prompt,
+            token=st.session_state.get("auth_token"),
+        )
 
-                with st.spinner("검색 중..."):
-                    for event in chat_stream(
-                        prompt,
-                        top_k=top_k,
-                        use_cot=use_cot,
-                        token=st.session_state.get("auth_token"),
-                    ):
-                        if event["type"] == "answer_chunk":
-                            full_answer += event["content"]
-                            answer_placeholder.markdown(full_answer + "▌")
-                        elif event["type"] == "done":
-                            answer_placeholder.markdown(full_answer)
-                        elif event["type"] == "references":
-                            references = event["content"]
-                        elif event["type"] == "error":
-                            st.error(f"오류: {event['content']}")
+        with st.chat_message("user", avatar="🧑"):
+            st.markdown(prompt)
 
-                # 참고 자료 표시
-                if references:
-                    with st.expander(f"📚 참고 자료 ({len(references)}건)", expanded=False):
-                        _render_references(references)
+        # AI 응답
+        with st.chat_message("assistant", avatar="🍁"):
+            try:
+                if use_streaming:
+                    # 스트리밍 응답
+                    answer_placeholder = st.empty()
+                    full_answer = ""
+                    references = []
 
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": full_answer,
-                    "references": references,
-                })
-                save_message(
-                    session_id,
-                    "assistant",
-                    full_answer,
-                    references or None,
-                    token=st.session_state.get("auth_token"),
-                )
+                    with st.spinner("검색 중..."):
+                        for event in chat_stream(
+                            prompt,
+                            top_k=top_k,
+                            use_cot=use_cot,
+                            token=st.session_state.get("auth_token"),
+                        ):
+                            if event["type"] == "answer_chunk":
+                                full_answer += event["content"]
+                                answer_placeholder.markdown(full_answer + "▌")
+                            elif event["type"] == "done":
+                                answer_placeholder.markdown(full_answer)
+                            elif event["type"] == "references":
+                                references = event["content"]
+                            elif event["type"] == "pending_character_sync":
+                                st.session_state.pending_character_sync = event.get("content")
+                            elif event["type"] == "error":
+                                st.error(f"오류: {event['content']}")
 
-            else:
-                # 동기 응답
-                with st.spinner("답변 생성 중..."):
-                    result = chat(
-                        prompt,
-                        top_k=top_k,
-                        use_cot=use_cot,
+                    # 참고 자료 표시
+                    if references:
+                        with st.expander(f"📚 참고 자료 ({len(references)}건)", expanded=False):
+                            _render_references(references)
+
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": full_answer,
+                        "references": references,
+                    })
+                    save_message(
+                        session_id,
+                        "assistant",
+                        full_answer,
+                        references or None,
                         token=st.session_state.get("auth_token"),
                     )
 
-                st.markdown(result["answer"])
+                else:
+                    # 동기 응답
+                    with st.spinner("답변 생성 중..."):
+                        result = chat(
+                            prompt,
+                            top_k=top_k,
+                            use_cot=use_cot,
+                            token=st.session_state.get("auth_token"),
+                        )
 
-                references = result.get("references", [])
-                if references:
-                    with st.expander(f"📚 참고 자료 ({len(references)}건)", expanded=False):
-                        _render_references(references)
+                    st.markdown(result["answer"])
 
+                    references = result.get("references", [])
+                    if references:
+                        with st.expander(f"📚 참고 자료 ({len(references)}건)", expanded=False):
+                            _render_references(references)
+
+                    # 캐릭터 동기화 확인 대기 시 프론트에서 저장
+                    if result.get("pending_character_sync"):
+                        st.session_state.pending_character_sync = result["pending_character_sync"]
+
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": result["answer"],
+                        "references": references,
+                    })
+                    save_message(
+                        session_id,
+                        "assistant",
+                        result["answer"],
+                        references or None,
+                        token=st.session_state.get("auth_token"),
+                    )
+
+            except Exception as e:
+                error_msg = f"⚠️ 오류가 발생했습니다: {str(e)}"
+                st.error(error_msg)
+                st.info("💡 백엔드 서버가 실행 중인지 확인해주세요.")
                 st.session_state.messages.append({
                     "role": "assistant",
-                    "content": result["answer"],
-                    "references": references,
+                    "content": error_msg,
                 })
-                save_message(
-                    session_id,
-                    "assistant",
-                    result["answer"],
-                    references or None,
-                    token=st.session_state.get("auth_token"),
-                )
-
-        except Exception as e:
-            error_msg = f"⚠️ 오류가 발생했습니다: {str(e)}"
-            st.error(error_msg)
-            st.info("💡 백엔드 서버가 실행 중인지 확인해주세요.")
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": error_msg,
-            })

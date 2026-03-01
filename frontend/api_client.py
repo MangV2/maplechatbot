@@ -185,6 +185,35 @@ def update_main_character(token: str, main_character_name: str) -> dict | None:
         return None
 
 
+def character_sync(
+    token: str,
+    character_name: str | None = None,
+) -> dict | None:
+    """넥슨 API로 캐릭터 정보 조회 후 DB 저장. 로그인 필수. character_name 생략 시 본캐."""
+    if not token:
+        return None
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            params = {}
+            if character_name and character_name.strip():
+                params["character_name"] = character_name.strip()
+            resp = client.post(
+                f"{API_BASE_URL}/users/me/character-sync",
+                params=params or None,
+                headers=_headers(token),
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 400:
+            return {"error": (e.response.json() or {}).get("detail", "본캐를 먼저 등록해 주세요.")}
+        if e.response.status_code == 404:
+            return {"error": (e.response.json() or {}).get("detail", "캐릭터를 찾을 수 없습니다.")}
+        return {"error": e.response.text or "요청 실패"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── 헬스체크 ──────────────────────────────────────────
 
 
