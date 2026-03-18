@@ -1,11 +1,19 @@
 """MapleRAG: Qdrant + GPT-4o 기반 메이플스토리 RAG."""
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
 
+from app.crawler.date_utils import parse_post_date
 from app.rag.openai_client import OpenAIClient
 from app.rag.qdrant_store import QdrantStore
 
 logger = logging.getLogger(__name__)
+
+# 리랭킹: 유사도 80% + 최신성 20%
+SIMILARITY_WEIGHT = 0.8
+RECENCY_WEIGHT = 0.2
+# 재정렬 풀 크기 (검색 시 top_k의 배수만큼 가져온 뒤 리랭킹)
+RECENCY_RERANK_POOL_MULTIPLIER = 3
 
 # ── 시스템 프롬프트 ─────────────────────────────────────
 
@@ -215,6 +223,37 @@ class MapleRAG:
 
     # ── 검색 ───────────────────────────────────────────
 
+    @staticmethod
+    def _compute_recency_score(
+        dt: datetime | None,
+        now: datetime,
+        oldest: datetime,
+    ) -> float:
+        """작성일 기준 최신성 점수 0~1 (최신일수록 1). 파싱 실패 시 0.5."""
+        if dt is None:
+            return 0.5
+        dt_utc = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        delta = (dt_utc - oldest).total_seconds() / (now - oldest).total_seconds()
+        return max(0.0, min(1.0, delta))
+
+    def _rerank_by_recency(
+        self,
+        results: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """유사도 80% + 최신성 20%로 재정렬 후 상위 top_k 반환. score는 합산 점수로 갱신."""
+        if not results:
+            return results
+        now = datetime.now(timezone.utc)
+        oldest = now - timedelta(days=365 * 2)
+        for doc in results:
+            dt = parse_post_date(str(doc.get("작성일") or ""))
+            rec = self._compute_recency_score(dt, now, oldest)
+            sim = float(doc.get("score") or 0.0)
+            doc["score"] = round(SIMILARITY_WEIGHT * sim + RECENCY_WEIGHT * rec, 6)
+        results.sort(key=lambda d: d["score"], reverse=True)
+        return results[:top_k]
+
     def search(
         self,
         query: str,
@@ -222,31 +261,38 @@ class MapleRAG:
         filter_job: str | None = None,
         filter_group: str | None = None,
     ) -> list[dict[str, Any]]:
-        """질문과 유사한 게시글 검색. 직업 또는 직업군 필터 적용."""
+        """질문과 유사한 게시글 검색. 직업/직업군 필터 적용 후 최신성 20% 반영 리랭킹."""
         query_vector = self.ai.create_embedding(query)
+        pool_size = top_k * RECENCY_RERANK_POOL_MULTIPLIER
 
         # 1) 직업 필터로 검색
         if filter_job:
-            results = self.store.search(query_vector, top_k=top_k, filter_job=filter_job)
+            results = self.store.search(
+                query_vector, top_k=pool_size, filter_job=filter_job
+            )
             if results:
-                return results
+                return self._rerank_by_recency(results, top_k)
             logger.warning("'%s' 직업 게시글 없음, 직업군으로 폴백", filter_job)
-            # 해당 직업의 직업군으로 폴백
             fallback_group = JOB_TO_GROUP.get(filter_job)
             if fallback_group:
-                results = self.store.search(query_vector, top_k=top_k, filter_group=fallback_group)
+                results = self.store.search(
+                    query_vector, top_k=pool_size, filter_group=fallback_group
+                )
                 if results:
-                    return results
+                    return self._rerank_by_recency(results, top_k)
 
         # 2) 직업군 필터로 검색
         if filter_group:
-            results = self.store.search(query_vector, top_k=top_k, filter_group=filter_group)
+            results = self.store.search(
+                query_vector, top_k=pool_size, filter_group=filter_group
+            )
             if results:
-                return results
+                return self._rerank_by_recency(results, top_k)
             logger.warning("'%s' 직업군 게시글 없음, 전체 검색으로 전환", filter_group)
 
         # 3) 전체 검색
-        return self.store.search(query_vector, top_k=top_k)
+        results = self.store.search(query_vector, top_k=pool_size)
+        return self._rerank_by_recency(results, top_k)
 
     # ── 컨텍스트 구성 ──────────────────────────────────
 
@@ -260,7 +306,7 @@ class MapleRAG:
             context += f"제목: {doc.get('제목', '')}\n"
             context += f"작성일: {doc.get('작성일', '')}\n"
             본문 = doc.get("본문", "")
-            context += f"\n본문:\n{본문[:500]}"
+            context += f"\n본문:\n{본문[:2000]}"
             댓글 = doc.get("댓글", "")
             if 댓글:
                 comments = str(댓글).split("|")[:3]

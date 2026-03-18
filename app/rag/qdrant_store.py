@@ -213,7 +213,7 @@ class QdrantStore:
 
     def get_max_written_date(self) -> datetime | None:
         """Qdrant에 저장된 게시물 중 가장 최근 작성일 반환."""
-        from app.crawler.pipeline import parse_post_date
+        from app.crawler.date_utils import parse_post_date
 
         max_date: datetime | None = None
         offset = None

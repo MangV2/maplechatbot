@@ -50,6 +50,7 @@ def build_graph() -> StateGraph:
             "character_sync": "character_sync",
         },
     )
+    
     builder.add_edge("clarify", END)
     builder.add_edge("no_answer", END)
     builder.add_edge("rag", END)

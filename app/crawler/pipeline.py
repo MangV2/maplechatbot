@@ -3,13 +3,13 @@ import asyncio
 import hashlib
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from app.crawler.date_utils import parse_post_date
 from app.crawler.inven_crawler import CrawlResult, CrawledPost, InvenCrawler
 from app.rag.openai_client import OpenAIClient
 from app.rag.qdrant_store import QdrantStore
@@ -18,49 +18,6 @@ logger = logging.getLogger(__name__)
 
 # 마지막 크롤링 날짜 저장 파일 경로
 LAST_CRAWL_DATE_FILE = Path("data/last_crawl_date.txt")
-
-# 인벤/마이그레이션 작성일 파싱용 패턴
-_DATE_PATTERNS = [
-    (re.compile(r"^(\d{4})[.-](\d{1,2})[.-](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?"), "datetime"),
-    (re.compile(r"^(\d{4})[.-](\d{1,2})[.-](\d{1,2})T(\d{1,2}):(\d{2})"), "datetime_iso"),
-    (re.compile(r"^(\d{4})[.-](\d{1,2})[.-](\d{1,2})$"), "date_only"),
-    (re.compile(r"^(\d{1,2})[.-](\d{1,2})\s+(\d{1,2}):(\d{2})"), "m-d-hm"),
-    (re.compile(r"^(\d{1,2})[.-](\d{1,2})$"), "m-d"),
-]
-
-
-def parse_post_date(date_str: str) -> datetime | None:
-    """게시글 작성일 문자열을 datetime으로 파싱. 실패 시 None."""
-    if not date_str or not isinstance(date_str, str):
-        return None
-    s = date_str.strip()
-    if not s:
-        return None
-    now = datetime.now(timezone.utc)
-    for pattern, fmt in _DATE_PATTERNS:
-        m = pattern.match(s)
-        if not m:
-            continue
-        try:
-            if fmt == "datetime":
-                g = m.groups()
-                y, mo, d, h, mi = int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4])
-                return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
-            if fmt == "datetime_iso":
-                y, mo, d, h, mi = m.groups()
-                return datetime(int(y), int(mo), int(d), int(h), int(mi), tzinfo=timezone.utc)
-            if fmt == "date_only":
-                y, mo, d = m.groups()
-                return datetime(int(y), int(mo), int(d), tzinfo=timezone.utc)
-            if fmt == "m-d-hm":
-                mo, d, h, mi = m.groups()
-                return datetime(now.year, int(mo), int(d), int(h), int(mi), tzinfo=timezone.utc)
-            if fmt == "m-d":
-                mo, d = m.groups()
-                return datetime(now.year, int(mo), int(d), tzinfo=timezone.utc)
-        except (ValueError, TypeError, IndexError):
-            continue
-    return None
 
 
 def filter_posts_by_since(posts: list[CrawledPost], since_date: datetime) -> list[CrawledPost]:
@@ -165,7 +122,7 @@ def _generate_point_id(post: CrawledPost) -> str:
 
 def _post_to_embedding_text(post: CrawledPost) -> str:
     """임베딩 생성용 텍스트 구성."""
-    return f"직업: {post.직업} | 제목: {post.제목} | {post.본문[:500]}"
+    return f"직업: {post.직업} | 제목: {post.제목} | {post.본문[:2000]}"
 
 
 def _post_to_payload(post: CrawledPost) -> dict:
