@@ -1,6 +1,7 @@
-"""MapleRAG: Qdrant + GPT-4o 기반 메이플스토리 RAG."""
+"""MapleRAG:메이플스토리 RAG."""
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Generator
 
 from app.crawler.date_utils import parse_post_date
@@ -229,11 +230,11 @@ class MapleRAG:
         now: datetime,
         oldest: datetime,
     ) -> float:
-        """작성일 기준 최신성 점수 0~1 (최신일수록 1). 파싱 실패 시 0.5."""
+        """작성일 기준 최신성 점수 0~1 (최신일수록 1). 파싱 실패 시 0.0."""
         if dt is None:
-            return 0.5
-        dt_utc = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        delta = (dt_utc - oldest).total_seconds() / (now - oldest).total_seconds()
+            return 0.0
+        dt_kst = dt if dt.tzinfo else dt.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+        delta = (dt_kst - oldest).total_seconds() / (now - oldest).total_seconds()
         return max(0.0, min(1.0, delta))
 
     def _rerank_by_recency(
@@ -244,7 +245,7 @@ class MapleRAG:
         """유사도 80% + 최신성 20%로 재정렬 후 상위 top_k 반환. score는 합산 점수로 갱신."""
         if not results:
             return results
-        now = datetime.now(timezone.utc)
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
         oldest = now - timedelta(days=365 * 2)
         for doc in results:
             dt = parse_post_date(str(doc.get("작성일") or ""))
