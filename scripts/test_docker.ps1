@@ -71,4 +71,4 @@ if ($DownAfter) {
 }
 
 Write-Host ""
-Write-Host "완료: Docker 테스트(mode=$Mode)" -ForegroundColor Green
+Write-Host "Done: Docker tests (mode=$Mode)" -ForegroundColor Green
