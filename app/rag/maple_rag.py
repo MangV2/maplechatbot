@@ -358,14 +358,16 @@ class MapleRAG:
         top_k: int = 3,
         use_cot: bool = True,
         main_character_name: str | None = None,
+        filter_job: str | None = None,
+        filter_group: str | None = None,
     ) -> dict[str, Any]:
         """CoT 기반 RAG 답변 생성 (동기)."""
         logger.info("질문: %s (본캐=%s)", query, main_character_name or "-")
 
         # 1) CoT 질문 분석
-        filter_job = None
-        filter_group = None
-        if use_cot and self.job_list:
+        if filter_job or filter_group:
+            logger.info("외부 라우터 필터 사용: 직업=%s, 직업군=%s", filter_job or "없음", filter_group or "없음")
+        elif use_cot and self.job_list:
             analysis = self.analyze_query(query)
             filter_job = analysis.get("filter_job")
             filter_group = analysis.get("filter_group")
@@ -392,14 +394,16 @@ class MapleRAG:
         top_k: int = 3,
         use_cot: bool = True,
         main_character_name: str | None = None,
+        filter_job: str | None = None,
+        filter_group: str | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         """스트리밍 RAG 답변 생성 (제너레이터)."""
         logger.info("질문 (스트리밍): %s (본캐=%s)", query, main_character_name or "-")
 
         # 1) CoT 질문 분석
-        filter_job = None
-        filter_group = None
-        if use_cot and self.job_list:
+        if filter_job or filter_group:
+            logger.info("외부 라우터 필터 사용(스트리밍): 직업=%s, 직업군=%s", filter_job or "없음", filter_group or "없음")
+        elif use_cot and self.job_list:
             analysis = self.analyze_query(query)
             filter_job = analysis.get("filter_job")
             filter_group = analysis.get("filter_group")

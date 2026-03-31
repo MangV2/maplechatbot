@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.agent.graph import invoke as agent_invoke
+from app.agent.rag_router import route_rag_query
 from app.agent.router import router_agent_node
 from app.agent.nodes.boss_node import boss_node
 from app.agent.nodes.character_sync_node import character_sync_node
@@ -127,11 +128,14 @@ async def chat_stream(
             # rag: 기존 RAG 스트리밍
             if route == "rag":
                 rag = get_rag()
+                rag_routing = route_rag_query(query, rag)
                 for event in rag.generate_answer_stream(
                     query=query,
                     top_k=request.top_k,
-                    use_cot=request.use_cot,
+                    use_cot=False,
                     main_character_name=main_char,
+                    filter_job=rag_routing.get("filter_job"),
+                    filter_group=rag_routing.get("filter_group"),
                 ):
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -154,11 +158,14 @@ async def chat_stream(
 
             # fallback: rag로 처리
             rag = get_rag()
+            rag_routing = route_rag_query(query, rag)
             for event in rag.generate_answer_stream(
                 query=query,
                 top_k=request.top_k,
-                use_cot=request.use_cot,
+                use_cot=False,
                 main_character_name=main_char,
+                filter_job=rag_routing.get("filter_job"),
+                filter_group=rag_routing.get("filter_group"),
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"

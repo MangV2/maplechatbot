@@ -2,6 +2,7 @@
 import logging
 from typing import Any
 
+from app.agent.rag_router import route_rag_query
 from app.agent.state import AgentState
 from app.rag.loader import get_rag
 
@@ -16,16 +17,27 @@ def rag_node(state: AgentState) -> dict[str, Any]:
 
     main_char = state.get("main_character_name")
     top_k = 5
-    use_cot = True
+    use_cot = False
 
     rag = get_rag()
+    routing = route_rag_query(query, rag)
+    filter_job = routing.get("filter_job")
+    filter_group = routing.get("filter_group")
     result = rag.generate_answer(
         query=query,
         top_k=top_k,
         use_cot=use_cot,
         main_character_name=main_char,
+        filter_job=filter_job,
+        filter_group=filter_group,
     )
     return {
         "final_answer": result.get("answer", ""),
         "references": result.get("references", []),
+        "retrieval_route": routing.get("retrieval_route"),
+        "retrieval_source": routing.get("retrieval_source"),
+        "retrieval_confidence": routing.get("retrieval_confidence"),
+        "retrieval_reasoning": routing.get("retrieval_reasoning"),
+        "filter_job": filter_job,
+        "filter_group": filter_group,
     }

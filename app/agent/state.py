@@ -16,3 +16,9 @@ class AgentState(TypedDict, total=False):
     final_answer: str
     references: list[dict[str, Any]]
     pending_character_sync: str | None  # 채팅으로 동기화 요청 시 캐릭터명 (확인 후 프론트에서 API 호출)
+    retrieval_route: str  # rag 내부 검색 라우트(job/group/all)
+    retrieval_source: str  # rag 라우트 판단 근거(rule/llm/fallback)
+    retrieval_confidence: int  # rag 라우트 신뢰도 1~5
+    retrieval_reasoning: str  # rag 라우트 판단 원문/사유
+    filter_job: str | None  # rag 검색 직업 필터
+    filter_group: str | None  # rag 검색 직업군 필터
