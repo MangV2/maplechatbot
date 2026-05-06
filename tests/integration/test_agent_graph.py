@@ -1,4 +1,4 @@
-"""에이전트 그래프 통합 테스트 (라우터·RAG mock)."""
+"""에이전트 그래프 통합 테스트 (라우터·RAG·보스·오케스트레이터 mock)."""
 import importlib
 import pytest
 from unittest.mock import patch, MagicMock
@@ -8,6 +8,14 @@ from app.agent.graph import build_graph, invoke, reset_graph
 
 def _rag_node_module():
     return importlib.import_module("app.agent.nodes.rag_node")
+
+
+def _boss_node_module():
+    return importlib.import_module("app.agent.nodes.boss_node")
+
+
+def _orchestrator_node_module():
+    return importlib.import_module("app.agent.nodes.orchestrator_node")
 
 
 def _mock_router_rag(state):
@@ -29,6 +37,10 @@ def _mock_router_no_answer(state):
 
 def _mock_router_character_sync(state):
     return {"route": "character_sync", "route_confidence": 5}
+
+
+def _mock_router_orchestrator(state):
+    return {"route": "orchestrator", "route_confidence": 5}
 
 
 @pytest.fixture
@@ -75,19 +87,30 @@ def test_invoke_empty_query_returns_graceful():
 
 
 def test_invoke_boss_route_with_snapshot():
-    """라우터 mock으로 boss 분기 + 스냅샷 전투력 → boss 노드 실행."""
+    """라우터 mock으로 boss 분기 + 스냅샷 전투력 → boss 노드 Function Calling 실행."""
     reset_graph()
+    boss_mod = _boss_node_module()
     with patch("app.agent.graph.router_agent_node", side_effect=_mock_router_boss):
-        result = invoke(
-            query="어떤 보스 도전 가능?",
-            character_snapshot={
-                "basic": {"level": 210},
-                "stat": {"final_stat": [{"stat_name": "전투력", "stat_value": "5000000"}]},
-            },
-        )
+        with patch.object(boss_mod, "OpenAIClient") as mock_cls:
+            mock_ai = MagicMock()
+            mock_ai.chat_with_tools.return_value = (
+                "현재 전투력 5,000,000 기준 보스 추천입니다.\n"
+                "도전 여유 있는 보스: 자쿰 (EASY), 반반 (NORMAL)\n"
+                "다음 목표 보스: 파풀라투스 (EASY)"
+            )
+            mock_cls.return_value = mock_ai
+            with patch.object(boss_mod, "get_rag"):
+                result = invoke(
+                    query="어떤 보스 도전 가능?",
+                    character_snapshot={
+                        "basic": {"level": 210},
+                        "stat": {"final_stat": [{"stat_name": "전투력", "stat_value": "5000000"}]},
+                    },
+                )
     assert "answer" in result
     assert "보스" in result["answer"]
-    assert "전투력" in result["answer"] or "5,000,000" in result["answer"]
+    assert "5,000,000" in result["answer"] or "전투력" in result["answer"]
+    mock_ai.chat_with_tools.assert_called_once()
 
 
 def test_invoke_clarify_route_returns_clarify_message():
@@ -118,3 +141,28 @@ def test_invoke_character_sync_route_returns_pending_when_name_extracted():
         )
     assert "동기화 진행" in result["answer"]
     assert result.get("pending_character_sync") == "루나스톤"
+
+
+def test_invoke_orchestrator_route_returns_synthesized_answer():
+    """라우터 mock으로 orchestrator 분기 → 병렬 서브에이전트 + LLM 종합 답변."""
+    reset_graph()
+    orch_mod = _orchestrator_node_module()
+    with patch("app.agent.graph.router_agent_node", side_effect=_mock_router_orchestrator):
+        with patch.object(orch_mod, "OpenAIClient") as mock_cls:
+            mock_ai = MagicMock()
+            mock_ai.chat_completion.return_value = "카오스 루시드 공략: 패턴 숙지 후 도전 권장합니다."
+            mock_cls.return_value = mock_ai
+            with patch.object(orch_mod, "get_rag") as mock_get_rag:
+                mock_rag_inst = MagicMock()
+                mock_rag_inst.search.return_value = []
+                mock_rag_inst._build_context.return_value = ""
+                mock_get_rag.return_value = mock_rag_inst
+                result = invoke(
+                    query="카오스 루시드 공략 알려줘",
+                    character_snapshot={
+                        "basic": {"level": 250},
+                        "stat": {"final_stat": [{"stat_name": "전투력", "stat_value": "50000000"}]},
+                    },
+                )
+    assert "answer" in result
+    assert "루시드" in result["answer"] or "공략" in result["answer"]

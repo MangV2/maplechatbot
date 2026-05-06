@@ -7,6 +7,7 @@ from app.agent.router import (
     ROUTE_BOSS,
     ROUTE_CLARIFY,
     ROUTE_NO_ANSWER,
+    ROUTE_ORCHESTRATOR,
     ROUTE_RAG,
     NO_ANSWER_MESSAGE,
     _parse_router_response,
@@ -32,13 +33,22 @@ def test_route_query_empty_state_defaults_rag():
 def test_parse_router_response():
     """LLM 응답 파싱: 점수 1~5, BEST 추출."""
     scores, best, filter_job, filter_group = _parse_router_response(
-        "RAG: 2\nBOSS: 4\nCHARACTER_SYNC: 1\nBEST: boss"
+        "RAG: 2\nBOSS: 4\nORCHESTRATOR: 1\nCHARACTER_SYNC: 1\nBEST: boss"
     )
     assert scores.get("rag") == 2
     assert scores.get("boss") == 4
     assert best == "boss"
     assert filter_job is None
     assert filter_group is None
+
+
+def test_parse_router_response_orchestrator():
+    """ORCHESTRATOR BEST 파싱."""
+    scores, best, _, _ = _parse_router_response(
+        "RAG: 1\nBOSS: 2\nORCHESTRATOR: 5\nCHARACTER_SYNC: 1\nBEST: orchestrator"
+    )
+    assert scores.get("orchestrator") == 5
+    assert best == ROUTE_ORCHESTRATOR
 
 
 def test_parse_router_response_with_job_group():
@@ -61,13 +71,15 @@ def test_parse_router_response_clamps_scores():
 
 def test_parse_router_response_invalid_best_uses_max():
     """BEST가 없거나 잘못되면 최고 점수 항목."""
-    scores, best, _, _ = _parse_router_response("RAG: 1\nBOSS: 5\nCHARACTER_SYNC: 2")
+    scores, best, _, _ = _parse_router_response("RAG: 1\nBOSS: 5\nORCHESTRATOR: 2\nCHARACTER_SYNC: 2")
     assert best == "boss"
 
 
 def test_parse_router_response_best_none():
     """BEST: none 이면 no_answer."""
-    _, best, _, _ = _parse_router_response("RAG: 1\nBOSS: 1\nCHARACTER_SYNC: 1\nBEST: none")
+    _, best, _, _ = _parse_router_response(
+        "RAG: 1\nBOSS: 1\nORCHESTRATOR: 1\nCHARACTER_SYNC: 1\nBEST: none"
+    )
     assert best == ROUTE_NO_ANSWER
 
 
@@ -85,7 +97,7 @@ def test_router_agent_node_confidence_below_3_returns_clarify():
     with patch.object(router_mod, "OpenAIClient") as mock_cls:
         mock_ai = MagicMock()
         mock_ai.chat_completion.return_value = (
-            "RAG: 2\nBOSS: 1\nCHARACTER_SYNC: 2\nBEST: rag"
+            "RAG: 2\nBOSS: 1\nORCHESTRATOR: 2\nCHARACTER_SYNC: 2\nBEST: rag"
         )
         mock_cls.return_value = mock_ai
         out = router_agent_node({"query": "아무거나"})
@@ -100,7 +112,7 @@ def test_router_agent_node_confidence_3_or_more_returns_best_route():
     with patch.object(router_mod, "OpenAIClient") as mock_cls:
         mock_ai = MagicMock()
         mock_ai.chat_completion.return_value = (
-            "RAG: 5\nBOSS: 1\nCHARACTER_SYNC: 1\nBEST: rag\nJOB: 없음\nGROUP: 없음"
+            "RAG: 5\nBOSS: 1\nORCHESTRATOR: 1\nCHARACTER_SYNC: 1\nBEST: rag\nJOB: 없음\nGROUP: 없음"
         )
         mock_cls.return_value = mock_ai
         out = router_agent_node({"query": "히어로 스킬 추천"})
@@ -115,7 +127,7 @@ def test_router_agent_node_rag_with_job_sets_filter():
     with patch.object(router_mod, "OpenAIClient") as mock_cls:
         mock_ai = MagicMock()
         mock_ai.chat_completion.return_value = (
-            "RAG: 5\nBOSS: 1\nCHARACTER_SYNC: 1\nBEST: rag\nJOB: 팔라딘\nGROUP: 없음"
+            "RAG: 5\nBOSS: 1\nORCHESTRATOR: 1\nCHARACTER_SYNC: 1\nBEST: rag\nJOB: 팔라딘\nGROUP: 없음"
         )
         mock_cls.return_value = mock_ai
         out = router_agent_node({"query": "팔라딘 코어 세팅"})
@@ -129,7 +141,7 @@ def test_router_agent_node_best_none_returns_no_answer():
     with patch.object(router_mod, "OpenAIClient") as mock_cls:
         mock_ai = MagicMock()
         mock_ai.chat_completion.return_value = (
-            "RAG: 1\nBOSS: 1\nCHARACTER_SYNC: 1\nBEST: none"
+            "RAG: 1\nBOSS: 1\nORCHESTRATOR: 1\nCHARACTER_SYNC: 1\nBEST: none"
         )
         mock_cls.return_value = mock_ai
         out = router_agent_node({"query": "오늘 날씨 어때?"})
