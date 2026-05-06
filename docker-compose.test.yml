@@ -1,0 +1,17 @@
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    env_file:
+      - .env
+    environment:
+      - QDRANT_HOST=qdrant
+      - POSTGRES_HOST=postgres
+    depends_on:
+      qdrant:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    command: ["pytest", "tests/unit", "-v"]
